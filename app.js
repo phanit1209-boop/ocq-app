@@ -354,6 +354,33 @@ async function editName() {
   }, "Name updated.");
 }
 
+// ---------- privacy notice ----------
+const PRIVACY_NOTICE_VERSION = 1;
+function setPrivacyLang(lang) {
+  $("privacyTextEn").classList.toggle("hidden", lang !== "en");
+  $("privacyTextTh").classList.toggle("hidden", lang !== "th");
+  $("privacyEn").setAttribute("aria-pressed", String(lang === "en"));
+  $("privacyTh").setAttribute("aria-pressed", String(lang === "th"));
+}
+function showPrivacy(required) {
+  return new Promise((resolve) => {
+    const d = $("privacyDialog");
+    const onCancel = (ev) => { if (required) ev.preventDefault(); };   // Esc cannot skip the first-time notice
+    d.addEventListener("cancel", onCancel);
+    d.addEventListener("close", () => { d.removeEventListener("cancel", onCancel); resolve(); }, { once: true });
+    d.showModal();
+  });
+}
+async function ensurePrivacyAck() {
+  let acked = true;
+  try { acked = await rpc("get_my_privacy_ack", { p_notice_version: PRIVACY_NOTICE_VERSION }); }
+  catch (e) { banner(friendly(e), "error"); return; }
+  if (acked) return;
+  await showPrivacy(true);
+  try { await rpc("acknowledge_privacy_notice", { p_notice_version: PRIVACY_NOTICE_VERSION }); }
+  catch (e) { banner(friendly(e), "error"); }
+}
+
 // ---------- start-up ----------
 async function start() {
   $("envLabel").textContent = C.environmentLabel || "";
@@ -363,6 +390,9 @@ async function start() {
     const { error } = await sb.auth.signInWithOAuth({ provider: C.lineProvider, options: { redirectTo: location.origin + location.pathname } });
     if (error) banner(friendly(error), "error");
   };
+  $("privacyEn").onclick = () => setPrivacyLang("en");
+  $("privacyTh").onclick = () => setPrivacyLang("th");
+  $("privacyLink").onclick = () => showPrivacy(false);
   $("signOutBtn").onclick = async () => { await sb.removeAllChannels(); await sb.auth.signOut(); location.reload(); };
   for (const b of document.querySelectorAll(".tabs button")) b.onclick = () => { state.tab = b.dataset.tab; state.viewing = null; syncChannels(); render(); refreshAll(); };
 
@@ -375,6 +405,7 @@ async function start() {
   try { profile = (await rpc("get_my_profile")) || []; } catch (e) { banner(friendly(e), "error"); }
   if (!profile.length) { show("notRosteredView"); return; }
   state.profile = profile[0];
+  await ensurePrivacyAck();
   if (state.profile.role === "admin") state.tab = "all";
   show("mainView");
   await recoverPendingJoin();

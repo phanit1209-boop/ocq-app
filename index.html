@@ -62,12 +62,52 @@
       <h1>Your display name</h1>
       <p class="hint">This is the name other residents and instructors see in the queues.</p>
       <input id="nameInput" type="text" maxlength="40" autocomplete="nickname" required>
+      <div class="warn">Your own name or nickname only. No patient names or HN.</div>
       <div class="row end" style="margin-top:14px">
         <button value="cancel" class="ghost" type="submit" formnovalidate>Cancel</button>
         <button value="ok" class="primary" id="nameSave" type="submit">Save</button>
       </div>
     </form>
   </dialog>
+
+  <dialog id="privacyDialog" aria-labelledby="privacyTitle">
+    <form method="dialog">
+      <h1 id="privacyTitle">Privacy notice</h1>
+      <div class="langSwitch row">
+        <button type="button" class="ghost small" id="privacyEn" aria-pressed="true">English</button>
+        <button type="button" class="ghost small" id="privacyTh" aria-pressed="false">ไทย</button>
+      </div>
+      <div id="privacyTextEn" class="privacyText">
+        <p>This app runs clinic queues for MU Ortho staff. It stores:</p>
+        <ul>
+          <li>your name or nickname and role</li>
+          <li>your LINE account ID, LINE display name and profile picture link</li>
+          <li>your queue activity: when you joined, waited, were checked or left</li>
+        </ul>
+        <p>It is used only to run the queues, prevent misuse and summarise clinic workload for the department. People in the same queue and the instructor see your position, name and dental unit. Urgent reasons are seen only by you, the instructor and admins.</p>
+        <p>Data is stored on Supabase servers in Singapore. Urgent reasons are removed after 30 days and activity records after 12 months.</p>
+        <p class="warn strong">Never enter patient names, HN or clinical details in this app.</p>
+        <p class="hint">To see, correct or delete your data, contact the queue administrator.</p>
+      </div>
+      <div id="privacyTextTh" class="privacyText hidden" lang="th">
+        <p>แอปนี้ใช้จัดคิวในคลินิกสำหรับบุคลากร MU Ortho โดยจัดเก็บ:</p>
+        <ul>
+          <li>ชื่อหรือชื่อเล่น และบทบาทของท่าน</li>
+          <li>LINE ID ชื่อที่แสดงใน LINE และลิงก์รูปโปรไฟล์</li>
+          <li>ประวัติการใช้คิว เช่น เวลาเข้าคิว รอ ได้รับการตรวจ หรือออกจากคิว</li>
+        </ul>
+        <p>ข้อมูลใช้เพื่อจัดคิว ป้องกันการใช้งานผิดวัตถุประสงค์ และสรุปภาระงานของคลินิกให้ภาควิชาเท่านั้น ผู้ที่อยู่ในคิวเดียวกันและอาจารย์จะเห็นลำดับ ชื่อ และหมายเลขยูนิตของท่าน ส่วนเหตุผลกรณีเร่งด่วนจะเห็นได้เฉพาะท่าน อาจารย์ผู้ตรวจ และผู้ดูแลระบบ</p>
+        <p>ข้อมูลจัดเก็บบนเซิร์ฟเวอร์ Supabase ที่สิงคโปร์ เหตุผลกรณีเร่งด่วนจะถูกลบหลัง 30 วัน และประวัติการใช้งานหลัง 12 เดือน</p>
+        <p class="warn strong">ห้ามกรอกชื่อผู้ป่วย HN หรือข้อมูลทางคลินิกใด ๆ ในแอปนี้</p>
+        <p class="hint">หากต้องการขอดู แก้ไข หรือลบข้อมูล กรุณาติดต่อผู้ดูแลระบบคิว</p>
+      </div>
+      <div class="row end" style="margin-top:14px">
+        <button value="ok" class="primary" id="privacyOk" type="submit" autofocus>I understand · รับทราบ</button>
+      </div>
+    </form>
+  </dialog>
+
+  <footer class="footer"><button type="button" class="linkish" id="privacyLink">Privacy notice</button></footer>
 
   <script src="config.js"></script>
   <script type="module" src="app.js"></script>
