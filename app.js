@@ -52,6 +52,8 @@ function el(tag, props = {}, ...children) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID() :
   "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)));
+const initials = (name) => String(name || "?").replace(/^(dr\.?|ทพ\.?|ทพญ\.?|อ\.)\s*/i, "").trim().slice(0, 1).toUpperCase() || "?";
+const hueOf = (name) => [...String(name || "")].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
 const timeOf = (iso) => (iso ? new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Bangkok" }) : "");
 function friendly(error) {
   const m = String(error?.message || error || "");
@@ -170,10 +172,11 @@ async function act(fn, okText) {
 function render() {
   const p = state.profile;
   if (!p) return;
-  $("whoLine").textContent = `${p.display_name} · ${p.role}`;
-  $("sessionLine").textContent = state.session
-    ? `Registration open: ${state.session.session_name} (until ${String(state.session.end_time).slice(0, 5)})`
-    : "Registration is closed now. Morning 08:45–12:00 · Afternoon 12:45–16:00";
+  $("whoLine").textContent = p.display_name;
+  const roleLabel = { resident: "Resident", instructor: "Instructor", admin: "Admin", technician: "Technician" }[p.role] || p.role;
+  $("sessionLine").textContent = `${roleLabel} · ` + (state.session
+    ? `Registration open until ${String(state.session.end_time).slice(0, 5)}`
+    : "Registration closed (08:45–12:00 · 12:45–16:00)");
   for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b.dataset.tab === state.tab && !state.viewing));
   $("mineTab").classList.toggle("hidden", state.tab !== "mine" || !!state.viewing);
   $("allTab").classList.toggle("hidden", state.tab !== "all" || !!state.viewing);
@@ -220,27 +223,50 @@ function renderAll() {
   if (!state.overview.length) { box.append(el("p", { class: "empty", text: "No instructors are available." })); return; }
   const list = el("ul", { class: "list" });
   for (const r of state.overview) {
+    const load = r.waiting_count === 0 ? "free" : r.waiting_count <= 2 ? "low" : r.waiting_count <= 4 ? "mid" : "high";
     list.append(el("li", { class: "item" + (r.my_queue_entry_id ? " mine" : ""), onclick: () => openQueue(r.resource_id), role: "button", tabindex: "0" },
+      el("div", { class: "avatar", style: `--h:${hueOf(r.resource_name)}`, text: initials(r.resource_name) }),
       el("div", { class: "main" },
         el("div", { class: "name" }, r.resource_name, r.has_check_in_progress ? el("span", { class: "badge progress", text: "checking" }) : null,
           r.resource_status !== "available" ? el("span", { class: "badge urgent", text: "unavailable" }) : null),
         el("div", { class: "meta", text: r.my_queue_entry_id
-          ? (r.my_status === "in_progress" ? "You are being checked" : `You are #${r.my_waiting_position}`)
-          : `${r.waiting_count} waiting` })),
-      el("div", { class: "pos", text: String(r.waiting_count) })));
+          ? (r.my_status === "in_progress" ? "You are being checked now" : `You are #${r.my_waiting_position} in line`)
+          : (r.has_check_in_progress ? "Checking a resident now" : "Tap to see the queue") })),
+      el("div", { class: "count", "data-load": load }, el("b", { text: String(r.waiting_count) }), "waiting")));
   }
   box.append(list);
 }
 
 function openQueue(resourceId) { state.viewing = resourceId; syncChannels(); loadQueue(resourceId).then(render).catch((e) => banner(friendly(e), "error")); render(); }
 
+// The queue view is split into a list (redrawn on every live update) and a join form that is
+// built once per visit and only has its enabled/disabled state updated, so typing is never lost.
+let joinForm = null;
 function renderQueueView(resourceId) {
-  const box = $("queueTab"); box.replaceChildren();
+  const box = $("queueTab");
+  if (box.dataset.rid !== resourceId) {
+    box.dataset.rid = resourceId; joinForm = null;
+    box.replaceChildren(
+      el("div", { class: "row" }, el("button", { class: "ghost small", type: "button",
+        onclick: () => { state.viewing = null; box.dataset.rid = ""; joinForm = null; syncChannels(); render(); } }, "‹ Back")),
+      el("div", { id: "queueBlock" }), el("div", { id: "joinBox" }));
+  }
   const r = state.overview.find((x) => x.resource_id === resourceId);
-  box.append(el("div", { class: "row" }, el("button", { class: "ghost small", type: "button", onclick: () => { state.viewing = null; syncChannels(); render(); } }, "‹ Back")));
-  if (!r) { box.append(el("p", { class: "empty", text: "Queue not found." })); return; }
-  box.append(renderQueueBlock(r));
-  if (state.profile.role === "resident" && !r.my_queue_entry_id) box.append(renderJoinForm(r));
+  if (!r) { $("queueBlock").replaceChildren(el("p", { class: "empty", text: "Queue not found." })); return; }
+  $("queueBlock").replaceChildren(renderQueueBlock(r));
+  const wantsForm = state.profile.role === "resident" && !r.my_queue_entry_id;
+  if (!wantsForm) { if (joinForm) { $("joinBox").replaceChildren(); joinForm = null; } return; }
+  if (!joinForm) { joinForm = renderJoinForm(r); $("joinBox").replaceChildren(joinForm); }
+  updateJoinForm(r);
+}
+function joinOpen(r) { return !!state.session && r.resource_status !== "out_of_service"; }
+function updateJoinForm(r) {
+  if (!joinForm) return;
+  const open = joinOpen(r);
+  joinForm.querySelector("button[type=submit]").disabled = !open || state.busy;
+  const w = joinForm.querySelector(".closedNote");
+  w.textContent = open ? "" : (state.session ? "This queue is not available." : "Registration is closed now.");
+  w.classList.toggle("hidden", open);
 }
 
 function renderQueueBlock(r) {
@@ -286,7 +312,7 @@ function renderQueueBlock(r) {
 }
 
 function renderJoinForm(r) {
-  const open = !!state.session && r.resource_status !== "out_of_service";
+  const open = joinOpen(r);
   const unit = el("input", { type: "number", min: "1", max: "999", inputmode: "numeric", id: "unitInput", required: true });
   const prio = el("select", { id: "prioInput" }, el("option", { value: "normal", text: "Normal" }), el("option", { value: "urgent", text: "Urgent" }));
   const reason = el("textarea", { id: "reasonInput", maxlength: "200", placeholder: "Short reason (no patient names or hospital numbers)" });
@@ -296,7 +322,7 @@ function renderJoinForm(r) {
   const submit = el("button", { class: "primary", type: "submit", disabled: !open || state.busy }, "Join queue");
   const form = el("form", { class: "card" },
     el("h2", { text: `Join ${r.resource_name}'s queue` }),
-    open ? null : el("p", { class: "warn", text: state.session ? "This queue is not available." : "Registration is closed now." }),
+    el("p", { class: "warn closedNote" + (open ? " hidden" : ""), text: open ? "" : (state.session ? "This queue is not available." : "Registration is closed now.") }),
     el("label", { for: "unitInput", text: "Dental unit (1–999)" }), unit,
     el("label", { for: "prioInput", text: "Priority" }), prio, reasonBox, el("div", { class: "row end" }, submit));
   form.addEventListener("submit", (ev) => {
