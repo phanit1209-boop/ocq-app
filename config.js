@@ -6,5 +6,6 @@ window.OCQ_CONFIG = {
   environmentLabel: "V5 development – synthetic data only",
   lineProvider: "custom:line",
   safetyRefreshSeconds: 60,
-  overviewRefreshSeconds: 45
+  overviewRefreshSeconds: 45,
+  features: { scanners: false, printers: false }   // switched on when Stage 2 / Stage 3 are live
 };

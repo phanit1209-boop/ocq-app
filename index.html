@@ -37,6 +37,8 @@
       <nav class="tabs" role="tablist">
         <button type="button" role="tab" data-tab="mine" id="tabMine">My queue</button>
         <button type="button" role="tab" data-tab="all" id="tabAll">Instructors</button>
+        <button type="button" role="tab" data-tab="scanners" id="tabScanners" class="hidden">Scanners</button>
+        <button type="button" role="tab" data-tab="printers" id="tabPrinters" class="hidden">Printers</button>
       </nav>
 
       <section id="mineTab"></section>
@@ -51,6 +53,18 @@
       <div class="row end">
         <button value="cancel" class="ghost" type="submit">Cancel</button>
         <button value="ok" class="primary" id="confirmOk" type="submit">Confirm</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="nameDialog">
+    <form method="dialog" id="nameForm">
+      <h1>Your display name</h1>
+      <p class="hint">This is the name other residents and instructors see in the queues.</p>
+      <input id="nameInput" type="text" maxlength="40" autocomplete="nickname" required>
+      <div class="row end" style="margin-top:14px">
+        <button value="cancel" class="ghost" type="submit" formnovalidate>Cancel</button>
+        <button value="ok" class="primary" id="nameSave" type="submit">Save</button>
       </div>
     </form>
   </dialog>

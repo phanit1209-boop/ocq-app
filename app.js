@@ -34,6 +34,7 @@ const MESSAGES = {
   instructor_role_required: "Only instructors can do this.",
   not_assigned_instructor: "Only the assigned instructor can do this.",
   queue_entry_not_found: "This entry was not found.",
+  invalid_display_name: "Names must be 1–40 characters, without < or > symbols.",
 };
 
 // ---------- small helpers ----------
@@ -172,7 +173,8 @@ async function act(fn, okText) {
 function render() {
   const p = state.profile;
   if (!p) return;
-  $("whoLine").textContent = p.display_name;
+  $("whoLine").replaceChildren(el("span", { text: p.display_name }),
+    el("button", { class: "edit", type: "button", onclick: editName }, "Edit name"));
   const roleLabel = { resident: "Resident", instructor: "Instructor", admin: "Admin", technician: "Technician" }[p.role] || p.role;
   $("sessionLine").textContent = `${roleLabel} · ` + (state.session
     ? `Registration open until ${String(state.session.end_time).slice(0, 5)}`
@@ -338,9 +340,25 @@ function renderJoinForm(r) {
   return form;
 }
 
+async function editName() {
+  const d = $("nameDialog"), input = $("nameInput");
+  input.value = state.profile.display_name;
+  d.showModal(); input.focus();
+  const result = await new Promise((resolve) => { d.onclose = () => resolve(d.returnValue); });
+  if (result !== "ok") return;
+  const name = input.value.replace(/\s+/g, " ").trim();
+  if (!name || name.length > 40 || /[<>]/.test(name)) { banner(MESSAGES.invalid_display_name, "error"); return; }
+  await act(async () => {
+    const r = await rpc("set_my_display_name", { p_display_name: name });
+    state.profile.display_name = r.display_name;
+  }, "Name updated.");
+}
+
 // ---------- start-up ----------
 async function start() {
   $("envLabel").textContent = C.environmentLabel || "";
+  $("tabScanners").classList.toggle("hidden", !C.features?.scanners);
+  $("tabPrinters").classList.toggle("hidden", !C.features?.printers);
   $("lineLoginBtn").onclick = async () => {
     const { error } = await sb.auth.signInWithOAuth({ provider: C.lineProvider, options: { redirectTo: location.origin + location.pathname } });
     if (error) banner(friendly(error), "error");
