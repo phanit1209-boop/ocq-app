@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <title>Ortho Clinic Queue</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="title">Ortho Clinic Queue</div>
+      <div class="subtitle" id="envLabel"></div>
+    </div>
+    <button class="ghost small hidden" id="signOutBtn" type="button">Sign out</button>
+  </header>
+
+  <div class="banner hidden" id="banner" role="status"></div>
+
+  <main id="app">
+    <section id="signInView" class="card hidden">
+      <h1>Sign in</h1>
+      <p>Use your LINE account. Only people on the clinic roster can use this app.</p>
+      <button id="lineLoginBtn" class="primary line" type="button">Sign in with LINE</button>
+    </section>
+
+    <section id="notRosteredView" class="card hidden">
+      <h1>Account not on the roster</h1>
+      <p>Your LINE sign-in worked, but this account is not on the clinic roster. Please ask the clinic administrator to add you.</p>
+    </section>
+
+    <section id="mainView" class="hidden">
+      <div class="who" id="whoLine"></div>
+      <div class="session" id="sessionLine"></div>
+
+      <nav class="tabs" role="tablist">
+        <button type="button" role="tab" data-tab="mine" id="tabMine">My queue</button>
+        <button type="button" role="tab" data-tab="all" id="tabAll">Instructors</button>
+      </nav>
+
+      <section id="mineTab"></section>
+      <section id="allTab" class="hidden"></section>
+      <section id="queueTab" class="hidden"></section>
+    </section>
+  </main>
+
+  <dialog id="confirmDialog">
+    <form method="dialog">
+      <p id="confirmText"></p>
+      <div class="row end">
+        <button value="cancel" class="ghost" type="submit">Cancel</button>
+        <button value="ok" class="primary" id="confirmOk" type="submit">Confirm</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="config.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
