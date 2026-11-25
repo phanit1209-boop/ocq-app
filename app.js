@@ -552,10 +552,9 @@ function renderMachineView(id) {
   if (m.my_queue_entry_id) box.append(machineStatusCard(m, true));
 
   if (!m.my_queue_entry_id) {
-    const canJoin = !!state.session && m.resource_status !== "out_of_service";
+    const canJoin = m.resource_status !== "out_of_service";     // machines are open all day
     box.append(el("div", { class: "card" },
-      el("p", { class: "meta", text: canJoin ? "Join now and tap “I'm ready” when you are at the scanner." :
-        (state.session ? "This scanner is out of service." : "Registration is closed now.") }),
+      el("p", { class: "meta", text: canJoin ? "Join now and tap “I'm ready” when you are at the scanner." : "This scanner is out of service." }),
       el("button", { class: "primary", type: "button", disabled: !canJoin || state.busy, onclick: () => act(async () => {
         const r = await rpc("join_machine_queue", { p_request_id: uuid(), p_resource_id: id });
         banner(`Joined: you are number ${r.queue_number}.`, "ok");
