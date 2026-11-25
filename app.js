@@ -13,6 +13,7 @@ const PENDING_KEY = "ocq-v5-pending-join";
 const state = { profile: null, overview: [], session: null, tab: "mine", viewing: null, queues: new Map(), channels: new Map(), busy: false,
   machines: [], mqueues: new Map(), mfaults: new Map(), viewingMachine: null, board: null, adminMachines: [] };
 const scannersOn = () => !!C.features?.scanners;
+const printersOn = () => !!C.features?.printers;
 const isStaff = () => ["technician", "admin"].includes(state.profile?.role);
 
 const MESSAGES = {
@@ -38,6 +39,9 @@ const MESSAGES = {
   not_assigned_instructor: "Only the assigned instructor can do this.",
   queue_entry_not_found: "This entry was not found.",
   invalid_display_name: "Names must be 1–40 characters, without < or > symbols.",
+  invalid_print_time: "Print time must be between 1 minute and 48 hours.",
+  invalid_print_outcome: "Please say whether the print came out OK.",
+  invalid_failure_reason: "Please choose what went wrong.",
   not_ready: "Tap “I'm ready” first, when you are at the machine.",
   not_your_turn: "Someone ahead of you is ready. Please wait for your turn.",
   machine_in_use: "The machine is in use. Wait for the current person to finish.",
@@ -117,7 +121,15 @@ async function loadOverview() { state.overview = (await rpc("get_instructor_over
 async function loadSession() { const rows = (await rpc("get_current_clinic_session")) || []; state.session = rows[0] || null; }
 async function loadQueue(resourceId) { state.queues.set(resourceId, (await rpc("get_queue", { p_resource_id: resourceId })) || []); }
 
-async function loadMachines() { state.machines = scannersOn() ? ((await rpc("get_machine_overview", { p_resource_type: "scanner" })) || []) : []; }
+async function loadMachines() {
+  const [sc, pr] = await Promise.all([
+    scannersOn() ? rpc("get_machine_overview", { p_resource_type: "scanner" }) : [],
+    printersOn() ? rpc("get_machine_overview", { p_resource_type: "printer" }) : []]);
+  state.machines = [...(sc || []).map((m) => ({ resource_type: "scanner", ...m })), ...(pr || []).map((m) => ({ resource_type: "printer", ...m }))];
+  checkPrintReminders();
+}
+const isPrinter = (m) => m.resource_type === "printer";
+const kindWord = (m) => (isPrinter(m) ? "printer" : "scanner");
 async function loadMachineQueue(id) { state.mqueues.set(id, (await rpc("get_machine_queue", { p_resource_id: id })) || []); }
 async function loadMachineFaults(id) { state.mfaults.set(id, (await rpc("get_machine_faults", { p_resource_id: id })) || []); }
 async function loadBoard() { state.board = isStaff() ? await rpc("get_fault_board") : null; }
@@ -224,14 +236,15 @@ function render() {
   for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b.dataset.tab === state.tab && !state.viewing));
   const viewingAny = !!state.viewing || !!state.viewingMachine;
   for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b.dataset.tab === state.tab && !viewingAny));
-  const panes = { mine: "mineTab", all: "allTab", scanners: "scannersTab", faults: "faultsTab", machines: "machinesTab" };
+  const panes = { mine: "mineTab", all: "allTab", scanners: "scannersTab", printers: "printersTab", faults: "faultsTab", machines: "machinesTab" };
   for (const [tab, id] of Object.entries(panes)) $(id).classList.toggle("hidden", state.tab !== tab || viewingAny);
   $("queueTab").classList.toggle("hidden", !state.viewing);
   $("machineTab").classList.toggle("hidden", !state.viewingMachine);
   if (state.viewing) renderQueueView(state.viewing);
   else if (state.viewingMachine) renderMachineView(state.viewingMachine);
   else if (state.tab === "mine") renderMine();
-  else if (state.tab === "scanners") renderScanners();
+  else if (state.tab === "scanners") renderMachineList("scanner");
+  else if (state.tab === "printers") renderMachineList("printer");
   else if (state.tab === "faults") renderFaults();
   else if (state.tab === "machines") renderAdminMachines();
   else renderAll();
@@ -242,7 +255,7 @@ function renderMine() {
   renderMineInner(box);
   const mm = state.machines.filter((m) => m.my_queue_entry_id);
   if (mm.length) {
-    box.append(el("div", { class: "section-title", text: "Scanners" }));
+    box.append(el("div", { class: "section-title", text: "Scanners and printers" }));
     for (const m of mm) box.append(machineStatusCard(m));
   }
 }
@@ -459,7 +472,8 @@ function askNote({ title, hint = "", label = "Note", required = true, category =
 function machineBadge(m) {
   if (m.resource_status === "out_of_service") return el("span", { class: "badge oos", text: "Out of service" });
   if (m.resource_status === "issue_reported") return el("span", { class: "badge warn", text: "Problem reported" });
-  if (m.in_use) return el("span", { class: "badge progress", text: m.over_limit ? "In use · over 30 min" : "In use" });
+  if (m.in_use) return el("span", { class: "badge progress", text: isPrinter(m) ? (m.over_limit ? "Printing · not collected" : "Printing")
+    : (m.over_limit ? "In use · over 30 min" : "In use") });
   return null;
 }
 function openMachine(id) {
@@ -467,26 +481,99 @@ function openMachine(id) {
   Promise.all([loadMachineQueue(id), loadMachineFaults(id)]).then(render).catch((e) => banner(friendly(e), "error"));
   render();
 }
-function renderScanners() {
-  const box = $("scannersTab"); box.replaceChildren();
-  if (!state.machines.length) { box.append(el("p", { class: "empty", text: "No scanners are set up yet." })); return; }
-  const list = el("ul", { class: "list" });
-  for (const m of state.machines) {
+function renderMachineList(type) {
+  const box = $(type === "printer" ? "printersTab" : "scannersTab"); box.replaceChildren();
+  const list = state.machines.filter((m) => m.resource_type === type);
+  if (!list.length) { box.append(el("p", { class: "empty", text: `No ${type}s are set up yet.` })); return; }
+  const ul = el("ul", { class: "list" });
+  for (const m of list) {
+    const busyText = isPrinter(m) ? `Printing for ${m.in_use_by} · free about ${timeOf(m.in_use_until)}` : `In use by ${m.in_use_by} since ${timeOf(m.in_use_since)}`;
     const meta = m.my_turn ? "Your turn — tap to start"
-      : m.my_status === "in_progress" ? "You are scanning now"
+      : m.my_status === "in_progress" ? (isPrinter(m) ? `Your print · ready about ${timeOf(m.in_use_until)}` : "You are scanning now")
       : m.my_queue_entry_id ? `You are #${m.my_waiting_position} in line` + (m.my_ready ? " · ready" : "")
-      : m.in_use ? `In use by ${m.in_use_by} since ${timeOf(m.in_use_since)}` : "Tap to see the queue";
-    list.append(el("li", { class: "item" + (m.my_queue_entry_id ? " mine" : ""), onclick: () => openMachine(m.resource_id), role: "button", tabindex: "0" },
+      : m.in_use ? busyText : "Tap to see the queue";
+    ul.append(el("li", { class: "item" + (m.my_queue_entry_id ? " mine" : ""), onclick: () => openMachine(m.resource_id), role: "button", tabindex: "0" },
       el("div", { class: "avatar", style: `--h:${hueOf(m.resource_code)}`, text: (m.resource_name.match(/\d+/) || [initials(m.resource_name)])[0] }),
       el("div", { class: "main" }, el("div", { class: "name" }, m.resource_name, machineBadge(m)), el("div", { class: "meta", text: meta })),
       el("div", { class: "count", "data-load": m.waiting_count === 0 ? "free" : m.waiting_count <= 2 ? "low" : "high" },
         el("b", { text: String(m.waiting_count) }), "waiting")));
   }
-  box.append(list);
+  box.append(ul);
 }
+// ---------- printers: dialogs and reminders ----------
+function askPrintTime(title = "How long is the print?", okText = "Start printing") {
+  return new Promise((resolve) => {
+    const d = $("printDialog"), h = $("printHours"), mi = $("printMinutes");
+    if (!h.options.length) {
+      for (let i = 0; i <= 47; i++) h.append(el("option", { value: String(i), text: `${i} h` }));
+      for (let i = 0; i < 60; i += 5) mi.append(el("option", { value: String(i), text: `${i} min` }));
+    }
+    $("printTitle").textContent = title; $("printOk").textContent = okText;
+    h.value = "1"; mi.value = "0";
+    d.onclose = () => {
+      if (d.returnValue !== "ok") return resolve(null);
+      const total = Number(h.value) * 60 + Number(mi.value);
+      if (total < 1) { banner(MESSAGES.invalid_print_time, "error"); return resolve(null); }
+      resolve(total);
+    };
+    d.showModal();
+  });
+}
+function askCollect() {
+  return new Promise((resolve) => {
+    const d = $("collectDialog");
+    $("outcomeOk").checked = true; $("failBox").classList.add("hidden"); $("failReason").selectedIndex = 0; $("failNote").value = "";
+    for (const r of d.querySelectorAll("input[name=outcome]")) r.onchange = () => $("failBox").classList.toggle("hidden", !$("outcomeFailed").checked);
+    d.onclose = () => {
+      if (d.returnValue !== "ok") return resolve(null);
+      if ($("outcomeOk").checked) return resolve({ outcome: "success", reason: null, note: null });
+      const note = $("failNote").value.replace(/\s+/g, " ").trim();
+      if (note.length > 300) { banner(MESSAGES.invalid_fault_note, "error"); return resolve(null); }
+      resolve({ outcome: "failed", reason: $("failReason").value, note: note || null });
+    };
+    d.showModal();
+  });
+}
+async function collect(entryId, forSomeoneElse = false) {
+  const c = await askCollect();
+  if (!c) return;
+  act(async () => {
+    const r = await rpc("collect_print", { p_queue_entry_id: entryId, p_outcome: c.outcome, p_failure_reason: c.reason, p_note: c.note });
+    banner(c.outcome === "success" ? "Collected. The printer is free for the next person."
+      : (r?.report_id ? "Recorded as failed. The technicians have been told about the printer fault." : "Recorded as failed.") +
+        (forSomeoneElse ? "" : " To reprint, join the queue again."), "ok");
+  });
+}
+const remindersShown = new Set();
+function checkPrintReminders() {   // in-app reminders while the app is open (no LINE messages)
+  const now = Date.now();
+  for (const m of state.machines) {
+    if (!isPrinter(m) || m.my_status !== "in_progress" || !m.in_use_until) continue;
+    const end = new Date(m.in_use_until).getTime();
+    const key10 = m.my_queue_entry_id + "@" + m.in_use_until + ":10", keyEnd = m.my_queue_entry_id + "@" + m.in_use_until + ":end";
+    if (now >= end && !remindersShown.has(keyEnd)) { remindersShown.add(keyEnd); remindersShown.add(key10);
+      banner(`Your print on ${m.resource_name} should be done. Collect it within 15 minutes, then tap Collected.`, "ok"); navigator.vibrate?.(300); }
+    else if (now >= end - 10 * 60000 && now < end && !remindersShown.has(key10)) { remindersShown.add(key10);
+      banner(`Your print on ${m.resource_name} finishes in about 10 minutes.`, "ok"); navigator.vibrate?.(200); }
+  }
+}
+setInterval(checkPrintReminders, 30000);
+
 // The card shown for my own place in a machine queue (My queue tab and machine view).
 function machineStatusCard(m, onMachinePage = false) {
   const id = m.my_queue_entry_id;
+  if (m.my_status === "in_progress" && isPrinter(m)) {
+    const late = m.in_use_until && Date.now() > new Date(m.in_use_until).getTime();
+    return el("div", { class: "turn" }, el("div", { class: "big", text: `Printing on ${m.resource_name}` }),
+      el("div", { class: "until", text: (late ? "Should be done since " : "Ready about ") + timeOf(m.in_use_until) +
+        (m.over_limit ? " · please collect it now" : "") }),
+      el("div", { class: "row", style: "margin-top:10px" },
+        el("button", { type: "button", disabled: state.busy, onclick: () => collect(id) }, "Collected"),
+        el("button", { type: "button", disabled: state.busy, onclick: async () => {
+          const extra = await askPrintTime("Add more time", "Add time");
+          if (extra) act(() => rpc("extend_print", { p_queue_entry_id: id, p_extra_minutes: extra }), "Time added.");
+        } }, "Add time")));
+  }
   if (m.my_status === "in_progress") {
     return el("div", { class: "turn" }, el("div", { class: "big", text: `Scanning on ${m.resource_name}` }),
       el("div", { text: `Started ${timeOf(m.in_use_since)}` + (m.over_limit ? " · over the 30-minute limit" : "") }),
@@ -496,18 +583,23 @@ function machineStatusCard(m, onMachinePage = false) {
   if (m.my_turn) {
     return el("div", { class: "turn" }, el("div", { class: "big", text: "Your turn" }),
       el("div", { text: `${m.resource_name} is free and you are next.` }),
-      el("div", { class: "row", style: "margin-top:10px" }, el("button", { type: "button", disabled: state.busy,
-        onclick: () => act(() => rpc("start_machine_turn", { p_queue_entry_id: id }), "Started. Tap Finish when you are done.") }, "Start scanning")));
+      el("div", { class: "row", style: "margin-top:10px" }, isPrinter(m)
+        ? el("button", { type: "button", disabled: state.busy, onclick: async () => {
+            const mins = await askPrintTime();
+            if (mins) act(() => rpc("start_print_turn", { p_queue_entry_id: id, p_print_minutes: mins }), "Printing started. You'll see a reminder here near the end.");
+          } }, "Start printing")
+        : el("button", { type: "button", disabled: state.busy,
+            onclick: () => act(() => rpc("start_machine_turn", { p_queue_entry_id: id }), "Started. Tap Finish when you are done.") }, "Start scanning")));
   }
   return el("div", { class: "card" },
     el("div", { class: "name", text: m.resource_name }),
     el("div", { class: "big-number", text: `#${m.my_waiting_position}` }),
     el("div", { class: "meta", text: m.my_ready ? "You are marked ready. Wait for “Your turn”." :
-      "Tap “I'm ready” when you are at the scanner. Until then you keep your place but others who are ready can go first." }),
+      `Tap “I'm ready” when you are at the ${kindWord(m)}. Until then you keep your place but others who are ready can go first.` }),
     el("div", { class: "row", style: "margin-top:8px" },
       el("button", { class: m.my_ready ? "ghost" : "primary", type: "button", disabled: state.busy,
         onclick: () => act(() => rpc("set_machine_ready", { p_queue_entry_id: id, p_ready: !m.my_ready }), m.my_ready ? "Marked not ready." : "Marked ready.") },
-        m.my_ready ? "Not ready yet" : "I'm ready to scan"),
+        m.my_ready ? "Not ready yet" : (isPrinter(m) ? "I'm ready to print" : "I'm ready to scan")),
       onMachinePage ? null : el("button", { class: "ghost", type: "button", onclick: () => openMachine(m.resource_id) }, "View queue"),
       el("button", { class: "danger", type: "button", disabled: state.busy, onclick: async () => {
         if (await askConfirm(`Leave the ${m.resource_name} queue?`)) act(() => rpc("cancel_my_entry", { p_queue_entry_id: id }), "You have left the queue."); } }, "Leave")));
@@ -532,18 +624,22 @@ function renderMachineView(id) {
   else {
     const list = el("ul", { class: "list" });
     for (const q of rows) {
-      const meta = q.status === "in_progress" ? `scanning since ${timeOf(q.started_at)}` : `joined ${timeOf(q.joined_at)}`;
+      const meta = q.status === "in_progress" ? (isPrinter(m) ? `printing · ready about ${timeOf(q.expected_end_at)}` : `scanning since ${timeOf(q.started_at)}`)
+        : `joined ${timeOf(q.joined_at)}`;
       list.append(el("li", { class: "item" + (q.is_mine ? " mine" : "") + (q.status === "in_progress" ? " progress" : "") },
         el("div", { class: "pos", text: q.status === "in_progress" ? "▶" : String(q.waiting_position) }),
         el("div", { class: "main" },
           el("div", { class: "name" }, q.display_name, q.is_mine ? " (you)" : "",
             q.status === "waiting" && q.ready ? el("span", { class: "badge ready", text: "Ready" }) : null,
             q.is_next ? el("span", { class: "badge progress", text: "Next" }) : null,
-            q.over_limit ? el("span", { class: "badge warn", text: "Over 30 min" }) : null),
+            q.over_limit ? el("span", { class: "badge warn", text: isPrinter(m) ? "Not collected" : "Over 30 min" }) : null),
           el("div", { class: "meta", text: meta })),
         isStaff() && q.status === "in_progress" && !q.is_mine ? el("button", { class: "ghost small", type: "button", disabled: state.busy,
-          onclick: async () => { if (await askConfirm(`Finish ${q.display_name}'s turn for them? This is recorded.`))
-            act(() => rpc("finish_machine_turn", { p_queue_entry_id: q.queue_entry_id }), "Turn finished."); } }, "Finish for them") : null));
+          onclick: async () => {
+            if (isPrinter(m)) return collect(q.queue_entry_id, true);
+            if (await askConfirm(`Finish ${q.display_name}'s turn for them? This is recorded.`))
+              act(() => rpc("finish_machine_turn", { p_queue_entry_id: q.queue_entry_id }), "Turn finished."); } },
+          isPrinter(m) ? "Collect for them" : "Finish for them") : null));
     }
     card.append(list);
   }
@@ -554,7 +650,7 @@ function renderMachineView(id) {
   if (!m.my_queue_entry_id) {
     const canJoin = m.resource_status !== "out_of_service";     // machines are open all day
     box.append(el("div", { class: "card" },
-      el("p", { class: "meta", text: canJoin ? "Join now and tap “I'm ready” when you are at the scanner." : "This scanner is out of service." }),
+      el("p", { class: "meta", text: canJoin ? `Join now and tap “I'm ready” when you are at the ${kindWord(m)}.` : `This ${kindWord(m)} is out of service.` }),
       el("button", { class: "primary", type: "button", disabled: !canJoin || state.busy, onclick: () => act(async () => {
         const r = await rpc("join_machine_queue", { p_request_id: uuid(), p_resource_id: id });
         banner(`Joined: you are number ${r.queue_number}.`, "ok");
@@ -603,7 +699,8 @@ function renderFaults() {
   for (const o of b.over_limit) {
     box.append(el("div", { class: "fault", onclick: () => openMachine(o.resource_id), role: "button", tabindex: "0" },
       el("div", { class: "name", text: o.resource_name }),
-      el("div", { class: "meta", text: `${o.display_name} · ${o.minutes} min (limit ${o.limit_minutes})` })));
+      el("div", { class: "meta", text: o.resource_type === "printer"
+        ? `${o.display_name} · print not collected (due ${timeOf(o.expected_end_at)})` : `${o.display_name} · ${o.minutes} min (limit ${o.limit_minutes})` })));
   }
 }
 let addMachineForm = null;   // built once so typing survives redraws
@@ -648,7 +745,7 @@ function renderAdminMachines() {
 async function start() {
   $("envLabel").textContent = C.environmentLabel || "";
   $("tabScanners").classList.toggle("hidden", !scannersOn());
-  $("tabPrinters").classList.toggle("hidden", !C.features?.printers);
+  $("tabPrinters").classList.toggle("hidden", !printersOn());
   $("lineLoginBtn").onclick = async () => {
     const { error } = await sb.auth.signInWithOAuth({ provider: C.lineProvider, options: { redirectTo: location.origin + location.pathname } });
     if (error) banner(friendly(error), "error");
@@ -671,8 +768,9 @@ async function start() {
   state.profile = profile[0];
   await ensurePrivacyAck();
   if (state.profile.role === "admin") state.tab = "all";
-  $("tabFaults").classList.toggle("hidden", !(scannersOn() && isStaff()));
-  $("tabMachines").classList.toggle("hidden", !(scannersOn() && state.profile.role === "admin"));
+  const machinesOn = scannersOn() || printersOn();
+  $("tabFaults").classList.toggle("hidden", !(machinesOn && isStaff()));
+  $("tabMachines").classList.toggle("hidden", !(machinesOn && state.profile.role === "admin"));
   show("mainView");
   await recoverPendingJoin();
   await refreshAll();

@@ -47,6 +47,7 @@
       <section id="allTab" class="hidden"></section>
       <section id="queueTab" class="hidden"></section>
       <section id="scannersTab" class="hidden"></section>
+      <section id="printersTab" class="hidden"></section>
       <section id="machineTab" class="hidden"></section>
       <section id="faultsTab" class="hidden"></section>
       <section id="machinesTab" class="hidden"></section>
@@ -96,6 +97,48 @@
       <div class="row end" style="margin-top:14px">
         <button value="cancel" class="ghost" type="submit" formnovalidate>Cancel</button>
         <button value="ok" class="primary" id="noteOk" type="submit">Send</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="printDialog">
+    <form method="dialog">
+      <h1 id="printTitle">How long is the print?</h1>
+      <p class="hint">Use the time shown by the slicer. You can add time later.</p>
+      <div class="row">
+        <select id="printHours" aria-label="Hours"></select>
+        <select id="printMinutes" aria-label="Minutes"></select>
+      </div>
+      <div class="row end" style="margin-top:14px">
+        <button value="cancel" class="ghost" type="submit" formnovalidate>Cancel</button>
+        <button value="ok" class="primary" id="printOk" type="submit">Start printing</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="collectDialog">
+    <form method="dialog">
+      <h1>Did the print come out OK?</h1>
+      <div class="row" style="margin:8px 0">
+        <label class="choice"><input type="radio" name="outcome" value="success" id="outcomeOk" checked> Yes, it's fine</label>
+        <label class="choice"><input type="radio" name="outcome" value="failed" id="outcomeFailed"> No, it failed</label>
+      </div>
+      <div id="failBox" class="hidden">
+        <label for="failReason">What went wrong?</label>
+        <select id="failReason">
+          <option value="detached_warped">Detached or warped</option>
+          <option value="missing_parts">Missing parts</option>
+          <option value="material">Resin or material problem</option>
+          <option value="printer_fault">Printer fault</option>
+          <option value="other">Other</option>
+        </select>
+        <label for="failNote">Details (optional)</label>
+        <textarea id="failNote" maxlength="300" rows="2"></textarea>
+        <div class="warn">No patient names or HN. Choosing “Printer fault” also reports a problem to the technicians.</div>
+      </div>
+      <div class="row end" style="margin-top:14px">
+        <button value="cancel" class="ghost" type="submit" formnovalidate>Cancel</button>
+        <button value="ok" class="primary" id="collectOk" type="submit">Collected</button>
       </div>
     </form>
   </dialog>

@@ -122,3 +122,10 @@ button[aria-pressed="true"] { background: var(--green, #06c755); color: #fff; }
 .tabs { display: inline-flex; flex-wrap: wrap; max-width: 100%; overflow: visible; border-radius: 26px; }
 .tabs button { white-space: nowrap; padding: 9px 15px; }
 #nameInput { width: 100%; font: inherit; padding: 13px 16px; border: 0; border-radius: 16px; background: #fff; }
+
+/* Stage 3: printers */
+#printDialog .row select { flex: 1; }
+.choice { display: flex; align-items: center; gap: 8px; background: #fff; border-radius: 14px; padding: 10px 14px; flex: 1; font-size: 15px; }
+.choice input { width: 18px; height: 18px; accent-color: var(--green); }
+.turn .until { font-size: 15px; opacity: .95; margin-top: 4px; }
+dialog select, dialog textarea, dialog input[type=text], dialog input:not([type]), dialog .choice { background: var(--soft); }
