@@ -10,7 +10,10 @@ const sb = createClient(C.supabaseUrl, C.publishableKey, {
 
 const $ = (id) => document.getElementById(id);
 const PENDING_KEY = "ocq-v5-pending-join";
-const state = { profile: null, overview: [], session: null, tab: "mine", viewing: null, queues: new Map(), channels: new Map(), busy: false };
+const state = { profile: null, overview: [], session: null, tab: "mine", viewing: null, queues: new Map(), channels: new Map(), busy: false,
+  machines: [], mqueues: new Map(), mfaults: new Map(), viewingMachine: null, board: null, adminMachines: [] };
+const scannersOn = () => !!C.features?.scanners;
+const isStaff = () => ["technician", "admin"].includes(state.profile?.role);
 
 const MESSAGES = {
   clinic_closed: "Registration is closed now (outside clinic session hours).",
@@ -35,7 +38,27 @@ const MESSAGES = {
   not_assigned_instructor: "Only the assigned instructor can do this.",
   queue_entry_not_found: "This entry was not found.",
   invalid_display_name: "Names must be 1–40 characters, without < or > symbols.",
+  not_ready: "Tap “I'm ready” first, when you are at the machine.",
+  not_your_turn: "Someone ahead of you is ready. Please wait for your turn.",
+  machine_in_use: "The machine is in use. Wait for the current person to finish.",
+  unsupported_resource_type: "This action is not available for this queue.",
+  invalid_fault_category: "Please choose what is wrong.",
+  invalid_fault_note: "The note can be up to 300 characters.",
+  already_reported: "You already reported a problem on this machine. It is being looked at.",
+  report_not_open: "This report is already closed.",
+  own_report: "This is your own report.",
+  note_required: "Please add a short note (up to 300 characters).",
+  technician_role_required: "Only technicians and admins can do this.",
+  admin_role_required: "Only admins can do this.",
+  invalid_machine_code: "Machine codes use letters, numbers, - or _ (up to 20).",
+  invalid_machine_name: "Machine names must be 1–40 characters, without < or >.",
+  machine_code_taken: "That machine code is already used.",
+  machine_has_active_entries: "People are still queued for this machine. Mark it out of service and wait until the queue is empty.",
+  entry_not_waiting_machine: "This entry is no longer waiting.",
 };
+const FAULT_LABEL = { will_not_start: "Will not start", quality: "Scan or print quality", software_connection: "Software or connection",
+  physical_damage: "Physical damage", other: "Other" };
+const STATUS_LABEL = { available: "Available", issue_reported: "Problem reported", out_of_service: "Out of service" };
 
 // ---------- small helpers ----------
 function el(tag, props = {}, ...children) {
@@ -94,16 +117,29 @@ async function loadOverview() { state.overview = (await rpc("get_instructor_over
 async function loadSession() { const rows = (await rpc("get_current_clinic_session")) || []; state.session = rows[0] || null; }
 async function loadQueue(resourceId) { state.queues.set(resourceId, (await rpc("get_queue", { p_resource_id: resourceId })) || []); }
 
+async function loadMachines() { state.machines = scannersOn() ? ((await rpc("get_machine_overview", { p_resource_type: "scanner" })) || []) : []; }
+async function loadMachineQueue(id) { state.mqueues.set(id, (await rpc("get_machine_queue", { p_resource_id: id })) || []); }
+async function loadMachineFaults(id) { state.mfaults.set(id, (await rpc("get_machine_faults", { p_resource_id: id })) || []); }
+async function loadBoard() { state.board = isStaff() ? await rpc("get_fault_board") : null; }
+async function loadAdminMachines() { state.adminMachines = state.profile?.role === "admin" ? ((await rpc("admin_list_machines")) || []) : []; }
+const isMachine = (id) => state.machines.some((m) => m.resource_id === id);
+
 function relevantResources() {
   const ids = new Set();
   for (const r of state.overview) if (r.is_my_resource || r.my_queue_entry_id) ids.add(r.resource_id);
   if (state.viewing) ids.add(state.viewing);
+  for (const m of state.machines) if (m.my_queue_entry_id) ids.add(m.resource_id);
+  if (state.viewingMachine) ids.add(state.viewingMachine);
   return ids;
 }
+const machineIds = () => [...relevantResources()].filter(isMachine);
+const instructorIds = () => [...relevantResources()].filter((id) => !isMachine(id));
 async function refreshAll() {
   try {
-    await Promise.all([loadOverview(), loadSession()]);
-    await Promise.all([...relevantResources()].map(loadQueue));
+    await Promise.all([loadOverview(), loadSession(), loadMachines()]);
+    await Promise.all([...instructorIds().map(loadQueue), ...machineIds().map(loadMachineQueue),
+      state.viewingMachine ? loadMachineFaults(state.viewingMachine) : null,
+      state.tab === "faults" ? loadBoard() : null, state.tab === "machines" ? loadAdminMachines() : null]);
     syncChannels();
     render();
   } catch (e) { banner(friendly(e), "error"); }
@@ -112,7 +148,13 @@ const pendingRefresh = new Map();
 function refreshQueueSoon(resourceId) {           // debounce bursts of live signals
   clearTimeout(pendingRefresh.get(resourceId));
   pendingRefresh.set(resourceId, setTimeout(async () => {
-    try { await Promise.all([loadQueue(resourceId), loadOverview()]); render(); } catch (e) { banner(friendly(e), "error"); }
+    try {
+      if (isMachine(resourceId)) {
+        await Promise.all([loadMachineQueue(resourceId), loadMachines(),
+          state.viewingMachine === resourceId ? loadMachineFaults(resourceId) : null, state.tab === "faults" ? loadBoard() : null]);
+      } else await Promise.all([loadQueue(resourceId), loadOverview()]);
+      render();
+    } catch (e) { banner(friendly(e), "error"); }
   }, 250));
 }
 
@@ -180,16 +222,31 @@ function render() {
     ? `Registration open until ${String(state.session.end_time).slice(0, 5)}`
     : "Registration closed (08:45–12:00 · 12:45–16:00)");
   for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b.dataset.tab === state.tab && !state.viewing));
-  $("mineTab").classList.toggle("hidden", state.tab !== "mine" || !!state.viewing);
-  $("allTab").classList.toggle("hidden", state.tab !== "all" || !!state.viewing);
+  const viewingAny = !!state.viewing || !!state.viewingMachine;
+  for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b.dataset.tab === state.tab && !viewingAny));
+  const panes = { mine: "mineTab", all: "allTab", scanners: "scannersTab", faults: "faultsTab", machines: "machinesTab" };
+  for (const [tab, id] of Object.entries(panes)) $(id).classList.toggle("hidden", state.tab !== tab || viewingAny);
   $("queueTab").classList.toggle("hidden", !state.viewing);
+  $("machineTab").classList.toggle("hidden", !state.viewingMachine);
   if (state.viewing) renderQueueView(state.viewing);
+  else if (state.viewingMachine) renderMachineView(state.viewingMachine);
   else if (state.tab === "mine") renderMine();
+  else if (state.tab === "scanners") renderScanners();
+  else if (state.tab === "faults") renderFaults();
+  else if (state.tab === "machines") renderAdminMachines();
   else renderAll();
 }
 
 function renderMine() {
   const box = $("mineTab"); box.replaceChildren();
+  renderMineInner(box);
+  const mm = state.machines.filter((m) => m.my_queue_entry_id);
+  if (mm.length) {
+    box.append(el("div", { class: "section-title", text: "Scanners" }));
+    for (const m of mm) box.append(machineStatusCard(m));
+  }
+}
+function renderMineInner(box) {
   const p = state.profile;
   if (p.role === "instructor") {
     const mine = state.overview.find((r) => r.is_my_resource);
@@ -198,10 +255,11 @@ function renderMine() {
     return;
   }
   if (p.role !== "resident") {
-    box.append(el("p", { class: "empty", text: "Use the Instructors tab to view any queue." }));
+    if (!state.machines.some((m) => m.my_queue_entry_id)) box.append(el("p", { class: "empty", text: "Use the tabs above to view any queue." }));
     return;
   }
   const active = state.overview.filter((r) => r.my_queue_entry_id);
+  if (!active.length && state.machines.some((m) => m.my_queue_entry_id)) return;
   if (!active.length) {
     box.append(el("div", { class: "card" }, el("p", { text: "You are not waiting in any queue." }),
       el("button", { class: "primary", type: "button", onclick: () => { state.tab = "all"; render(); } }, "Choose an instructor")));
@@ -381,10 +439,216 @@ async function ensurePrivacyAck() {
   catch (e) { banner(friendly(e), "error"); }
 }
 
+// ---------- Stage 2: scanners ----------
+function askNote({ title, hint = "", label = "Note", required = true, category = false, okText = "Send" }) {
+  return new Promise((resolve) => {
+    const d = $("noteDialog");
+    $("noteTitle").textContent = title; $("noteHint").textContent = hint; $("noteLabel").textContent = label;
+    $("noteCategoryBox").classList.toggle("hidden", !category); $("noteOk").textContent = okText;
+    $("noteText").value = ""; $("noteCategory").selectedIndex = 0;
+    d.onclose = () => {
+      if (d.returnValue !== "ok") return resolve(null);
+      const note = $("noteText").value.replace(/\s+/g, " ").trim();
+      if (required && !note) { banner(MESSAGES.note_required, "error"); return resolve(null); }
+      if (note.length > 300) { banner(MESSAGES.invalid_fault_note, "error"); return resolve(null); }
+      resolve({ note: note || null, category: $("noteCategory").value });
+    };
+    d.showModal(); $("noteText").focus();
+  });
+}
+function machineBadge(m) {
+  if (m.resource_status === "out_of_service") return el("span", { class: "badge oos", text: "Out of service" });
+  if (m.resource_status === "issue_reported") return el("span", { class: "badge warn", text: "Problem reported" });
+  if (m.in_use) return el("span", { class: "badge progress", text: m.over_limit ? "In use · over 30 min" : "In use" });
+  return null;
+}
+function openMachine(id) {
+  state.viewingMachine = id; state.viewing = null; syncChannels();
+  Promise.all([loadMachineQueue(id), loadMachineFaults(id)]).then(render).catch((e) => banner(friendly(e), "error"));
+  render();
+}
+function renderScanners() {
+  const box = $("scannersTab"); box.replaceChildren();
+  if (!state.machines.length) { box.append(el("p", { class: "empty", text: "No scanners are set up yet." })); return; }
+  const list = el("ul", { class: "list" });
+  for (const m of state.machines) {
+    const meta = m.my_turn ? "Your turn — tap to start"
+      : m.my_status === "in_progress" ? "You are scanning now"
+      : m.my_queue_entry_id ? `You are #${m.my_waiting_position} in line` + (m.my_ready ? " · ready" : "")
+      : m.in_use ? `In use by ${m.in_use_by} since ${timeOf(m.in_use_since)}` : "Tap to see the queue";
+    list.append(el("li", { class: "item" + (m.my_queue_entry_id ? " mine" : ""), onclick: () => openMachine(m.resource_id), role: "button", tabindex: "0" },
+      el("div", { class: "avatar", style: `--h:${hueOf(m.resource_code)}`, text: (m.resource_name.match(/\d+/) || [initials(m.resource_name)])[0] }),
+      el("div", { class: "main" }, el("div", { class: "name" }, m.resource_name, machineBadge(m)), el("div", { class: "meta", text: meta })),
+      el("div", { class: "count", "data-load": m.waiting_count === 0 ? "free" : m.waiting_count <= 2 ? "low" : "high" },
+        el("b", { text: String(m.waiting_count) }), "waiting")));
+  }
+  box.append(list);
+}
+// The card shown for my own place in a machine queue (My queue tab and machine view).
+function machineStatusCard(m, onMachinePage = false) {
+  const id = m.my_queue_entry_id;
+  if (m.my_status === "in_progress") {
+    return el("div", { class: "turn" }, el("div", { class: "big", text: `Scanning on ${m.resource_name}` }),
+      el("div", { text: `Started ${timeOf(m.in_use_since)}` + (m.over_limit ? " · over the 30-minute limit" : "") }),
+      el("div", { class: "row", style: "margin-top:10px" }, el("button", { type: "button", disabled: state.busy,
+        onclick: () => act(() => rpc("finish_machine_turn", { p_queue_entry_id: id }), "Finished. The scanner is free for the next person.") }, "Finish")));
+  }
+  if (m.my_turn) {
+    return el("div", { class: "turn" }, el("div", { class: "big", text: "Your turn" }),
+      el("div", { text: `${m.resource_name} is free and you are next.` }),
+      el("div", { class: "row", style: "margin-top:10px" }, el("button", { type: "button", disabled: state.busy,
+        onclick: () => act(() => rpc("start_machine_turn", { p_queue_entry_id: id }), "Started. Tap Finish when you are done.") }, "Start scanning")));
+  }
+  return el("div", { class: "card" },
+    el("div", { class: "name", text: m.resource_name }),
+    el("div", { class: "big-number", text: `#${m.my_waiting_position}` }),
+    el("div", { class: "meta", text: m.my_ready ? "You are marked ready. Wait for “Your turn”." :
+      "Tap “I'm ready” when you are at the scanner. Until then you keep your place but others who are ready can go first." }),
+    el("div", { class: "row", style: "margin-top:8px" },
+      el("button", { class: m.my_ready ? "ghost" : "primary", type: "button", disabled: state.busy,
+        onclick: () => act(() => rpc("set_machine_ready", { p_queue_entry_id: id, p_ready: !m.my_ready }), m.my_ready ? "Marked not ready." : "Marked ready.") },
+        m.my_ready ? "Not ready yet" : "I'm ready to scan"),
+      onMachinePage ? null : el("button", { class: "ghost", type: "button", onclick: () => openMachine(m.resource_id) }, "View queue"),
+      el("button", { class: "danger", type: "button", disabled: state.busy, onclick: async () => {
+        if (await askConfirm(`Leave the ${m.resource_name} queue?`)) act(() => rpc("cancel_my_entry", { p_queue_entry_id: id }), "You have left the queue."); } }, "Leave")));
+}
+function renderMachineView(id) {
+  const box = $("machineTab"); box.replaceChildren();
+  box.append(el("div", { class: "row" }, el("button", { class: "ghost small", type: "button",
+    onclick: () => { state.viewingMachine = null; syncChannels(); render(); } }, "‹ Back")));
+  const m = state.machines.find((x) => x.resource_id === id);
+  if (!m) { box.append(el("p", { class: "empty", text: "This machine is no longer available." })); return; }
+  const rows = state.mqueues.get(id) || [];
+  const faults = state.mfaults.get(id) || [];
+  const reportBtn = el("button", { class: "danger small", type: "button", disabled: state.busy, onclick: async () => {
+    const n = await askNote({ title: `Report a problem: ${m.resource_name}`, hint: "Technicians and admins are told straight away. The queue keeps running.",
+      label: "Details (optional)", required: false, category: true });
+    if (n) act(() => rpc("report_fault", { p_resource_id: id, p_category: n.category, p_note: n.note }), "Problem reported. Thank you.");
+  } }, "Report a problem");
+  const card = el("div", { class: "card" },
+    el("div", { class: "row", style: "justify-content:space-between" }, el("h2", {}, m.resource_name, machineBadge(m)), reportBtn),
+    el("div", { class: "meta", text: `${m.resource_status === "available" && m.in_use ? "In use" : (STATUS_LABEL[m.resource_status] || m.resource_status)} · ${m.waiting_count} waiting · ${m.ready_count} ready` }));
+  if (!rows.length) card.append(el("p", { class: "empty", text: "Nobody is waiting." }));
+  else {
+    const list = el("ul", { class: "list" });
+    for (const q of rows) {
+      const meta = q.status === "in_progress" ? `scanning since ${timeOf(q.started_at)}` : `joined ${timeOf(q.joined_at)}`;
+      list.append(el("li", { class: "item" + (q.is_mine ? " mine" : "") + (q.status === "in_progress" ? " progress" : "") },
+        el("div", { class: "pos", text: q.status === "in_progress" ? "▶" : String(q.waiting_position) }),
+        el("div", { class: "main" },
+          el("div", { class: "name" }, q.display_name, q.is_mine ? " (you)" : "",
+            q.status === "waiting" && q.ready ? el("span", { class: "badge ready", text: "Ready" }) : null,
+            q.is_next ? el("span", { class: "badge progress", text: "Next" }) : null,
+            q.over_limit ? el("span", { class: "badge warn", text: "Over 30 min" }) : null),
+          el("div", { class: "meta", text: meta })),
+        isStaff() && q.status === "in_progress" && !q.is_mine ? el("button", { class: "ghost small", type: "button", disabled: state.busy,
+          onclick: async () => { if (await askConfirm(`Finish ${q.display_name}'s turn for them? This is recorded.`))
+            act(() => rpc("finish_machine_turn", { p_queue_entry_id: q.queue_entry_id }), "Turn finished."); } }, "Finish for them") : null));
+    }
+    card.append(list);
+  }
+  card.append(el("div", { class: "live", text: state.channels.has(id) ? "Live updates on" : "" }));
+  box.append(card);
+  if (m.my_queue_entry_id) box.append(machineStatusCard(m, true));
+
+  if (!m.my_queue_entry_id) {
+    const canJoin = !!state.session && m.resource_status !== "out_of_service";
+    box.append(el("div", { class: "card" },
+      el("p", { class: "meta", text: canJoin ? "Join now and tap “I'm ready” when you are at the scanner." :
+        (state.session ? "This scanner is out of service." : "Registration is closed now.") }),
+      el("button", { class: "primary", type: "button", disabled: !canJoin || state.busy, onclick: () => act(async () => {
+        const r = await rpc("join_machine_queue", { p_request_id: uuid(), p_resource_id: id });
+        banner(`Joined: you are number ${r.queue_number}.`, "ok");
+      }) }, "Join queue")));
+  }
+
+  if (!faults.length && !isStaff()) return;          // nothing to show; reporting is at the top
+  const fcard = el("div", { class: "card" }, el("h2", { text: "Problems" }));
+  if (!faults.length) fcard.append(el("p", { class: "meta", text: "No problems reported." }));
+  for (const f of faults) {
+    fcard.append(el("div", { class: "fault" },
+      el("div", { class: "name", text: FAULT_LABEL[f.category] || f.category }),
+      f.note ? el("div", { text: f.note }) : null,
+      el("div", { class: "meta", text: `Reported ${timeOf(f.created_at)}` + (f.same_problem_count ? ` · ${f.same_problem_count} others same problem` : "") +
+        (f.status === "confirmed" ? " · confirmed" : "") }),
+      f.status === "open" && !f.is_mine ? el("button", { class: "ghost small", type: "button", disabled: state.busy || f.i_seconded,
+        onclick: () => act(() => rpc("second_fault", { p_report_id: f.report_id }), "Thanks — added to the report.") },
+        f.i_seconded ? "You reported the same" : "Same problem") : null,
+      isStaff() && f.status === "open" ? el("button", { class: "ghost small", type: "button", disabled: state.busy, onclick: async () => {
+        const n = await askNote({ title: "Dismiss report", hint: "Say what you checked.", okText: "Dismiss" });
+        if (n) act(() => rpc("dismiss_fault", { p_report_id: f.report_id, p_note: n.note }), "Report dismissed."); } }, "Dismiss") : null));
+  }
+  fcard.append(el("div", { class: "row", style: "margin-top:8px" },
+    isStaff() && m.resource_status !== "out_of_service" ? el("button", { class: "ghost", type: "button", disabled: state.busy, onclick: async () => {
+      const n = await askNote({ title: "Mark out of service", hint: "New joins and starts are blocked. People waiting keep their place.", okText: "Out of service" });
+      if (n) act(() => rpc("set_machine_out_of_service", { p_resource_id: id, p_note: n.note }), "Marked out of service."); } }, "Out of service") : null,
+    isStaff() && m.resource_status !== "available" ? el("button", { class: "primary", type: "button", disabled: state.busy, onclick: async () => {
+      const n = await askNote({ title: "Back in service", hint: "Short fix note.", okText: "Back in service" });
+      if (n) act(() => rpc("set_machine_back_in_service", { p_resource_id: id, p_note: n.note }), "Back in service."); } }, "Back in service") : null));
+  box.append(fcard);
+}
+function renderFaults() {
+  const box = $("faultsTab"); box.replaceChildren();
+  const b = state.board;
+  if (!b) { box.append(el("p", { class: "empty", text: "Loading…" })); return; }
+  box.append(el("div", { class: "section-title", text: `Problem reports (${b.faults.length})` }));
+  if (!b.faults.length) box.append(el("p", { class: "empty", text: "No open reports." }));
+  for (const f of b.faults) {
+    box.append(el("div", { class: "fault", onclick: () => openMachine(f.resource_id), role: "button", tabindex: "0" },
+      el("div", { class: "name" }, f.resource_name, f.status === "confirmed" ? el("span", { class: "badge oos", text: "Out of service" }) : null),
+      el("div", { text: (FAULT_LABEL[f.category] || f.category) + (f.note ? " — " + f.note : "") }),
+      el("div", { class: "meta", text: `${f.reported_by} · ${timeOf(f.created_at)}` + (f.same_problem_count ? ` · +${f.same_problem_count} same` : "") })));
+  }
+  box.append(el("div", { class: "section-title", text: `Over the time limit (${b.over_limit.length})` }));
+  if (!b.over_limit.length) box.append(el("p", { class: "empty", text: "Nobody is over the limit." }));
+  for (const o of b.over_limit) {
+    box.append(el("div", { class: "fault", onclick: () => openMachine(o.resource_id), role: "button", tabindex: "0" },
+      el("div", { class: "name", text: o.resource_name }),
+      el("div", { class: "meta", text: `${o.display_name} · ${o.minutes} min (limit ${o.limit_minutes})` })));
+  }
+}
+let addMachineForm = null;   // built once so typing survives redraws
+function renderAdminMachines() {
+  const box = $("machinesTab"); box.replaceChildren();
+  const list = el("ul", { class: "list" });
+  for (const m of state.adminMachines) {
+    list.append(el("li", { class: "item" },
+      el("div", { class: "main" },
+        el("div", { class: "name" }, m.resource_name, m.active ? null : el("span", { class: "badge oos", text: "Retired" })),
+        el("div", { class: "meta", text: `${m.resource_code} · ${m.resource_type} · ${STATUS_LABEL[m.resource_status] || m.resource_status}` +
+          (m.active_entries ? ` · ${m.active_entries} in queue` : "") })),
+      el("div", { class: "row" },
+        el("button", { class: "ghost small", type: "button", disabled: state.busy, onclick: async () => {
+          const n = await askNote({ title: `Rename ${m.resource_name}`, label: "New name", okText: "Save" });
+          if (n) act(() => rpc("admin_rename_machine", { p_resource_id: m.resource_id, p_name: n.note }), "Renamed."); } }, "Rename"),
+        el("button", { class: m.active ? "danger small" : "primary small", type: "button", disabled: state.busy, onclick: async () => {
+          if (await askConfirm(m.active ? `Retire ${m.resource_name}? It disappears from the app; its history is kept.` : `Bring ${m.resource_name} back?`))
+            act(() => rpc("admin_set_machine_active", { p_resource_id: m.resource_id, p_active: !m.active }), m.active ? "Retired." : "Restored.");
+        } }, m.active ? "Retire" : "Restore"))));
+  }
+  if (!addMachineForm) {
+    const type = el("select", { id: "newMachineType" }, el("option", { value: "scanner", text: "Intraoral scanner" }), el("option", { value: "printer", text: "3D printer" }));
+    const code = el("input", { id: "newMachineCode", maxlength: "20", placeholder: "Code, e.g. SC3" });
+    const name = el("input", { id: "newMachineName", maxlength: "40", placeholder: "Name, e.g. Scanner 3 (iTero)" });
+    addMachineForm = el("form", { class: "card" }, el("h2", { text: "Add a machine" }), type, code, name,
+      el("div", { class: "row end" }, el("button", { class: "primary", type: "submit" }, "Add")));
+    addMachineForm.addEventListener("submit", (ev) => { ev.preventDefault();
+      act(async () => {
+        await rpc("admin_add_machine", { p_resource_type: type.value, p_code: code.value, p_name: name.value });
+        code.value = ""; name.value = "";              // clear only after success
+        banner("Machine added.", "ok");
+      }); });
+  }
+  addMachineForm.querySelector("button[type=submit]").disabled = state.busy;
+  const form = addMachineForm;
+  box.append(el("div", { class: "section-title", text: "Scanners and printers" }),
+    state.adminMachines.length ? list : el("p", { class: "empty", text: "No machines yet." }), form);
+}
+
 // ---------- start-up ----------
 async function start() {
   $("envLabel").textContent = C.environmentLabel || "";
-  $("tabScanners").classList.toggle("hidden", !C.features?.scanners);
+  $("tabScanners").classList.toggle("hidden", !scannersOn());
   $("tabPrinters").classList.toggle("hidden", !C.features?.printers);
   $("lineLoginBtn").onclick = async () => {
     const { error } = await sb.auth.signInWithOAuth({ provider: C.lineProvider, options: { redirectTo: location.origin + location.pathname } });
@@ -394,7 +658,8 @@ async function start() {
   $("privacyTh").onclick = () => setPrivacyLang("th");
   $("privacyLink").onclick = () => showPrivacy(false);
   $("signOutBtn").onclick = async () => { await sb.removeAllChannels(); await sb.auth.signOut(); location.reload(); };
-  for (const b of document.querySelectorAll(".tabs button")) b.onclick = () => { state.tab = b.dataset.tab; state.viewing = null; syncChannels(); render(); refreshAll(); };
+  for (const b of document.querySelectorAll(".tabs button")) b.onclick = () => {
+    state.tab = b.dataset.tab; state.viewing = null; state.viewingMachine = null; $("queueTab").dataset.rid = ""; syncChannels(); render(); refreshAll(); };
 
   const { data: { session } } = await sb.auth.getSession();
   if (!session) { show("signInView"); return; }
@@ -407,6 +672,8 @@ async function start() {
   state.profile = profile[0];
   await ensurePrivacyAck();
   if (state.profile.role === "admin") state.tab = "all";
+  $("tabFaults").classList.toggle("hidden", !(scannersOn() && isStaff()));
+  $("tabMachines").classList.toggle("hidden", !(scannersOn() && state.profile.role === "admin"));
   show("mainView");
   await recoverPendingJoin();
   await refreshAll();

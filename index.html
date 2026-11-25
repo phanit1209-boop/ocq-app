@@ -39,11 +39,17 @@
         <button type="button" role="tab" data-tab="all" id="tabAll">Instructors</button>
         <button type="button" role="tab" data-tab="scanners" id="tabScanners" class="hidden">Scanners</button>
         <button type="button" role="tab" data-tab="printers" id="tabPrinters" class="hidden">Printers</button>
+        <button type="button" role="tab" data-tab="faults" id="tabFaults" class="hidden">Faults</button>
+        <button type="button" role="tab" data-tab="machines" id="tabMachines" class="hidden">Machines</button>
       </nav>
 
       <section id="mineTab"></section>
       <section id="allTab" class="hidden"></section>
       <section id="queueTab" class="hidden"></section>
+      <section id="scannersTab" class="hidden"></section>
+      <section id="machineTab" class="hidden"></section>
+      <section id="faultsTab" class="hidden"></section>
+      <section id="machinesTab" class="hidden"></section>
     </section>
   </main>
 
@@ -66,6 +72,30 @@
       <div class="row end" style="margin-top:14px">
         <button value="cancel" class="ghost" type="submit" formnovalidate>Cancel</button>
         <button value="ok" class="primary" id="nameSave" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="noteDialog">
+    <form method="dialog">
+      <h1 id="noteTitle">Note</h1>
+      <p class="hint" id="noteHint"></p>
+      <div id="noteCategoryBox" class="hidden">
+        <label for="noteCategory">What is wrong?</label>
+        <select id="noteCategory">
+          <option value="will_not_start">Will not start</option>
+          <option value="quality">Scan or print quality</option>
+          <option value="software_connection">Software or connection</option>
+          <option value="physical_damage">Physical damage</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <label for="noteText" id="noteLabel">Note</label>
+      <textarea id="noteText" maxlength="300" rows="3"></textarea>
+      <div class="warn">No patient names or HN.</div>
+      <div class="row end" style="margin-top:14px">
+        <button value="cancel" class="ghost" type="submit" formnovalidate>Cancel</button>
+        <button value="ok" class="primary" id="noteOk" type="submit">Send</button>
       </div>
     </form>
   </dialog>

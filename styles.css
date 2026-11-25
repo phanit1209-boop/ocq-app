@@ -79,7 +79,7 @@ h2 { font-size: 19px; margin: 2px 0 4px; }
 
 /* form */
 label { display: block; font-weight: 600; font-size: 14px; margin: 14px 0 6px; color: var(--ink); }
-input[type=number], textarea, select { width: 100%; font: inherit; padding: 13px 16px; border: 0; border-radius: 16px; background: #fff; color: var(--ink); }
+input[type=number], input[type=text], input:not([type]), textarea, select { width: 100%; font: inherit; padding: 13px 16px; border: 0; border-radius: 16px; background: #fff; color: var(--ink); }
 textarea { min-height: 76px; resize: vertical; }
 .hint { font-size: 13px; color: var(--muted); }
 .warn { font-size: 13px; color: var(--red); margin-top: 6px; }
@@ -105,3 +105,20 @@ button.small { padding: 4px 12px; font-size: 13px; }
 button[aria-pressed="true"] { background: var(--green, #06c755); color: #fff; }
 .footer { text-align: center; padding: 18px 0 28px; }
 .linkish { background: none; border: 0; color: var(--muted); font-size: 13px; text-decoration: underline; cursor: pointer; }
+
+/* Stage 2: machines */
+.badge.ready { background: var(--green-soft); color: var(--green-dark); }
+.badge.warn { background: #fff4d6; color: #8a5a00; }
+.badge.oos { background: var(--red-soft); color: var(--red); }
+.turn { background: var(--green); color: #fff; border-radius: 22px; padding: 18px; margin: 10px 0; }
+.turn .big { font-size: 26px; font-weight: 800; }
+.turn button { background: #fff; color: var(--green-dark); }
+.fault { border-left: 4px solid var(--red); padding: 8px 12px; margin: 8px 0; background: #fff; border-radius: 12px; }
+.fault .meta { font-size: 13px; color: var(--muted); }
+.section-title { font-size: 15px; font-weight: 600; color: var(--muted); margin: 18px 4px 4px; }
+#machinesTab input, #machinesTab select { margin-bottom: 8px; }
+
+/* tabs: never cut off; wrap onto a second row when there are many (staff/admin) */
+.tabs { display: inline-flex; flex-wrap: wrap; max-width: 100%; overflow: visible; border-radius: 26px; }
+.tabs button { white-space: nowrap; padding: 9px 15px; }
+#nameInput { width: 100%; font: inherit; padding: 13px 16px; border: 0; border-radius: 16px; background: #fff; }
