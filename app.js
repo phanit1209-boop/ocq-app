@@ -900,7 +900,7 @@ function clinicGo(fn) { fn(); render(); loadClinicCalendar(true).then(render).ca
 function clinicStep(n) {
   clinicGo(() => {
     const t = clinicCal.anchor;
-    if (clinicCal.view === "month" || clinicCal.view === "2month") clinicCal.anchor = isoOf(+t.slice(0, 4), +t.slice(5, 7) - 1 + n * (clinicCal.view === "2month" ? 2 : 1), 1);
+    if (clinicCal.view === "month" || clinicCal.view === "2month") clinicCal.anchor = isoOf(+t.slice(0, 4), +t.slice(5, 7) - 1 + n, 1);   // 2 months also moves one month at a time
     else if (clinicCal.view === "week" || clinicCal.view === "2week") clinicCal.anchor = addDays(mondayOf(t), 7 * n * (clinicCal.view === "2week" ? 2 : 1));
     else { let d = addDays(t, n); while ([0, 6].includes(weekdayOf(d))) d = addDays(d, n); clinicCal.anchor = d; }
   });
