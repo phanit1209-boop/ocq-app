@@ -280,8 +280,7 @@ function render() {
     el("button", { class: "status-chip " + (myRes.on_duty ? "active" : "inactive"), type: "button", id: "myStatusBtn", disabled: state.busy,
       onclick: () => setStatus(myRes, true) },
       el("span", { class: "dot" }), statusText(myRes),
-      el("span", { class: "chev", text: "Change today ›" })),
-    el("button", { class: "cal-chip", type: "button", id: "myCalBtn", onclick: openMyCalendar }, "📅 My calendar"));
+      el("span", { class: "chev", text: "Change today ›" })));
   const roleLabel = ({ resident: "Resident", instructor: p.instructor_kind === "external" ? "External instructor" : "Instructor",
     admin: "Admin", technician: "Technician" }[p.role] || p.role) + (p.is_admin && p.role !== "admin" ? " · Admin" : "");
   $("sessionLine").textContent = `${roleLabel} · ` + (state.session
@@ -291,7 +290,7 @@ function render() {
   const viewingAny = !!state.viewing || !!state.viewingMachine;
   for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b.dataset.tab === state.tab && !viewingAny));
   const panes = { mine: "mineTab", all: "allTab", scanners: "scannersTab", printers: "printersTab", faults: "faultsTab", machines: "machinesTab",
-    people: "peopleTab", settings: "settingsTab", calendar: "calendarTab" };
+    people: "peopleTab", settings: "settingsTab", calendar: "calendarTab", mycal: "mycalTab" };
   for (const [tab, id] of Object.entries(panes)) $(id).classList.toggle("hidden", state.tab !== tab || viewingAny);
   $("queueTab").classList.toggle("hidden", !state.viewing);
   $("machineTab").classList.toggle("hidden", !state.viewingMachine);
@@ -305,6 +304,7 @@ function render() {
   else if (state.tab === "people") renderPeople();
   else if (state.tab === "settings") renderSettings();
   else if (state.tab === "calendar") renderCalendar();
+  else if (state.tab === "mycal") renderMyCal();
   else renderAll();
 }
 
@@ -554,9 +554,14 @@ function applyTabs() {
   $("tabFaults").classList.toggle("hidden", !(machinesOn && isStaff()));
   $("tabMachines").classList.toggle("hidden", !(machinesOn && isAdmin()));
   $("tabPeople").classList.toggle("hidden", !isAdmin());
+  $("tabMyCal").classList.toggle("hidden", state.profile?.role !== "instructor");
+  if (state.tab === "mycal" && state.profile?.role !== "instructor") state.tab = "mine";
   // the clinic calendar: a tab for residents and admins; plain instructors reach it from the LINE menu link
   $("tabCalendar").classList.toggle("hidden", !(machineTabsForMe() || isAdmin()) && state.tab !== "calendar");
   if (["faults", "machines", "people"].includes(state.tab) && !isAdmin() && !(state.tab === "faults" && isStaff())) state.tab = "mine";
+  // two buttons per row: with an odd number of tabs the last one sits centred on its own row
+  const shown = [...document.querySelectorAll(".tabs button")].filter((b) => !b.classList.contains("hidden"));
+  shown.forEach((b, i) => b.classList.toggle("odd-last", shown.length % 2 === 1 && i === shown.length - 1));
 }
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
 const WEEK_CHOICES = [["off", "—"], ["all", "Every week"], ["1,3", "1st & 3rd"], ["1,3,5", "1st, 3rd & 5th"], ["2,4", "2nd & 4th"]];
@@ -677,10 +682,13 @@ async function openSettings() {
   try { state.schedule = state.profile.role === "instructor" ? ((await rpc("get_my_schedule")) || []) : []; render(); }
   catch (e) { banner(friendly(e), "error"); }
 }
-async function openMyCalendar() {
-  await openSettings();
-  const t = $("setDaysOff");
-  if (t) t.scrollIntoView({ block: "start", behavior: "smooth" });
+// "My calendar" tab (instructors): built once per visit so a background refresh never resets the month shown
+let myCalCard = null;
+function renderMyCal() {
+  const box = $("mycalTab");
+  if (myCalCard && box.contains(myCalCard)) return;
+  myCalCard = el("div", { class: "card", id: "myCalCard" }, el("h2", { text: "My calendar" }), daysOffSection(null, "set"));
+  box.replaceChildren(myCalCard);
 }
 let settingsCard = null;   // built once per visit so a background refresh never wipes unsaved choices
 function summaryFields(prefix, { email, freq, scope, admin }) {
@@ -981,7 +989,7 @@ function renderCalendar() {
         hol ? el("span", { class: "hnote", text: "Holiday" }) : null,
         ...evsFor(iso).slice(0, 2).map((e) => el("span", { class: "enote", text: e.title })),
         evsFor(iso).length > 2 ? el("span", { class: "enote", text: `+${evsFor(iso).length - 2} more` }) : null,
-        ...people.map((p) => el("span", { class: "who-row" }, one ? null : el("span", { class: "who", text: shortName(p.name) }),
+        ...people.map((p) => el("span", { class: "who-row" }, one ? null : el("span", { class: "cal-who", text: shortName(p.name) }),
           el("span", { class: "halves" + (one ? "" : " mini") }, ...["AM", "PM"].map((k) => el("span", { class: "half " + (p[k]?.state || "none"), text: halfLabel(p[k]) }))))),
         one && people[0] && (people[0].AM?.state === "limited" || people[0].PM?.state === "limited")
           ? el("span", { class: "tnote", text: (people[0].AM?.state === "limited" ? people[0].AM : people[0].PM).time_note }) : null);
@@ -1469,9 +1477,7 @@ function renderSettings() {
       settingsCard = null; applyTabs();
     }, "Settings saved.");
   });
-  settingsCard = el("div", { class: "settings-wrap" },
-    state.profile.role === "instructor" ? el("div", { class: "card", id: "myCalCard" }, el("h2", { text: "My calendar" }), daysOffSection(null, "set")) : null,
-    el("div", { class: "card" }, el("h2", { text: "Settings" }), form));
+  settingsCard = el("div", { class: "card" }, el("h2", { text: "Settings" }), form);
   box.append(settingsCard);
 }
 function describeChange(c) {
@@ -1913,7 +1919,7 @@ function renderAdminMachines() {
 }
 
 // ---------- start-up ----------
-const VIEWS = ["calendar", "mine", "all", "scanners", "printers"];
+const VIEWS = ["calendar", "mycal", "mine", "all", "scanners", "printers"];
 function wantedView() {
   const v = new URLSearchParams(location.search).get("view") || location.hash.replace(/^#/, "");
   if (VIEWS.includes(v)) { try { sessionStorage.setItem("ocq_view", v); } catch {} return v; }
@@ -1940,6 +1946,7 @@ async function start() {
   $("privacyLink").onclick = () => showPrivacy(false);
   $("signOutBtn").onclick = async () => { await sb.removeAllChannels(); await sb.auth.signOut(); location.reload(); };
   for (const b of document.querySelectorAll(".tabs button")) b.onclick = () => {
+    if (b.dataset.tab === "mycal") myCalCard = null;   // fresh each visit
     state.tab = b.dataset.tab; state.viewing = null; state.viewingMachine = null; $("queueTab").dataset.rid = ""; syncChannels(); render(); refreshAll(); };
 
   const { data: { session } } = await sb.auth.getSession();

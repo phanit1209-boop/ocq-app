@@ -133,6 +133,7 @@ dialog select, dialog textarea, dialog input[type=text], dialog input:not([type]
 .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; width: 100%; border-radius: 24px; }
 .tabs button { width: 100%; text-align: center; padding: 10px 8px; }
 .tabs button.hidden { display: none; }
+.tabs button.odd-last { grid-column: 1 / -1; justify-self: center; width: calc(50% - 2px); }
 
 .where { margin-top: 6px; font-weight: 600; color: var(--green); }
 
@@ -212,9 +213,9 @@ details.range-add { margin-top: 10px; } details.range-add summary { cursor: poin
 .holiday-line { color: var(--slate); font-weight: 600; margin: 0 0 6px; }
 .cal-day.wide { padding: 4px 3px; gap: 2px; }
 .who-row { display: flex; flex-direction: column; gap: 1px; margin-top: 2px; }
-.who { font-size: 10px; line-height: 12px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-who { font-size: 10px; line-height: 12px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .halves.mini .half { height: 13px; line-height: 13px; font-size: 9px; border-radius: 3px; }
-.cal-day.holiday .who { color: var(--slate); }
+.cal-day.holiday .cal-who { color: var(--slate); }
 #calWho { margin: 4px 0 8px; }
 .day-list { display: flex; flex-direction: column; gap: 8px; }
 .day-block { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; }
