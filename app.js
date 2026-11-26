@@ -349,17 +349,23 @@ function statusBadge(r) {
 }
 function askStatus(name) {
   return new Promise((resolve) => {
-    const d = $("statusDialog"), t = $("statusTime");
+    const d = $("statusDialog"), t = $("statusTime"), u = $("statusUntilTime");
     $("statusTitle").textContent = `Status today: ${name}`;
-    if (!t.options.length) for (let h = 7; h <= 18; h++) for (const m of [0, 15, 30, 45]) {
-      const v = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`; t.append(el("option", { value: v, text: v })); }
-    t.value = "10:00"; $("statusActive").checked = true;
-    const sync = () => $("statusTimeBox").classList.toggle("hidden", !($("statusUntil").checked || $("statusFrom").checked));
+    for (const sel of [t, u]) if (!sel.options.length) for (let h = 7; h <= 18; h++) for (const m of [0, 15, 30, 45]) {
+      const v = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`; sel.append(el("option", { value: v, text: v })); }
+    t.value = "10:00"; u.value = "12:00"; $("statusActive").checked = true;
+    const sync = () => {
+      const between = $("statusBetween").checked;
+      $("statusTimeBox").classList.toggle("hidden", !($("statusUntil").checked || $("statusFrom").checked || between));
+      $("statusTimeLabel").textContent = between ? "From" : "Time";
+      $("statusUntilBox").classList.toggle("hidden", !between);
+    };
     for (const r of d.querySelectorAll("input[name=statusMode]")) r.onchange = sync; sync();
     d.onclose = () => {
       if (d.returnValue !== "ok") return resolve(null);
       const mode = d.querySelector("input[name=statusMode]:checked").value;
-      resolve({ mode, time: mode === "until" || mode === "from" ? t.value : null });
+      if (mode === "between" && u.value <= t.value) { banner("The end time must be after the start time.", "error"); return resolve(null); }
+      resolve({ mode, time: ["until", "from", "between"].includes(mode) ? t.value : null, until: mode === "between" ? u.value : null });
     };
     d.showModal();
   });
@@ -368,7 +374,7 @@ async function setStatus(r, isOwner) {
   const v = await askStatus(r.resource_name);
   if (!v) return;
   act(async () => {
-    await rpc("set_instructor_status", { p_resource_id: isOwner ? null : r.resource_id, p_mode: v.mode, p_time: v.time });
+    await rpc("set_instructor_status", { p_resource_id: isOwner ? null : r.resource_id, p_mode: v.mode, p_time: v.time, p_until: v.until });
     if (state.tab === "people") { await loadOverview(); $("peopleTab").replaceChildren(); }
   }, "Status updated.");
 }
@@ -980,13 +986,7 @@ function renderMachineView(id) {
       label: "Details (optional)", required: false, category: true });
     if (n) act(() => rpc("report_fault", { p_resource_id: id, p_category: n.category, p_note: n.note }), "Problem reported. Thank you.");
   } }, "Report a problem");
-  const useBtns = !isStaff() ? null : el("div", { class: "row" },
-    m.resource_status !== "out_of_service" ? el("button", { class: "danger small", type: "button", disabled: state.busy, onclick: async () => {
-      const n = await askNote({ title: `Do not use: ${m.resource_name}`, hint: "Everyone sees 'Do not use'. New joins and starts are blocked; people waiting keep their place.", label: "Reason", okText: "Do not use" });
-      if (n) act(() => rpc("set_machine_out_of_service", { p_resource_id: id, p_note: n.note }), "Marked 'Do not use'."); } }, "Do not use") : null,
-    m.resource_status !== "available" ? el("button", { class: "primary small", type: "button", disabled: state.busy, onclick: async () => {
-      const n = await askNote({ title: `OK to use: ${m.resource_name}`, hint: "Short note on what was fixed or checked.", okText: "OK to use" });
-      if (n) act(() => rpc("set_machine_back_in_service", { p_resource_id: id, p_note: n.note }), "Marked OK to use."); } }, "OK to use") : null);
+  const useBtns = !isStaff() ? null : el("div", { class: "row" }, ...useButtons(id, m.resource_name, m.resource_status));
   const card = el("div", { class: "card" },
     el("div", { class: "row", style: "justify-content:space-between" }, el("h2", {}, m.resource_name, machineBadge(m)), reportBtn),
     useBtns,
@@ -1074,16 +1074,27 @@ function renderFaults() {
   }
 }
 let addMachineForm = null;   // built once so typing survives redraws
+function useButtons(id, name, status) {   // "Do not use" / "OK to use" — machine page and admin Machines tab
+  return [
+    status !== "out_of_service" ? el("button", { class: "danger small", type: "button", disabled: state.busy, onclick: async () => {
+      const n = await askNote({ title: `Do not use: ${name}`, hint: "Everyone sees 'Do not use'. New joins and starts are blocked; people waiting keep their place.", label: "Reason", okText: "Do not use" });
+      if (n) act(() => rpc("set_machine_out_of_service", { p_resource_id: id, p_note: n.note }), "Marked 'Do not use'."); } }, "Do not use") : null,
+    status !== "available" ? el("button", { class: "primary small", type: "button", disabled: state.busy, onclick: async () => {
+      const n = await askNote({ title: `OK to use: ${name}`, hint: "Short note on what was fixed or checked.", okText: "OK to use" });
+      if (n) act(() => rpc("set_machine_back_in_service", { p_resource_id: id, p_note: n.note }), "Marked OK to use."); } }, "OK to use") : null];
+}
 function renderAdminMachines() {
   const box = $("machinesTab"); box.replaceChildren();
   const list = el("ul", { class: "list" });
   for (const m of state.adminMachines) {
     list.append(el("li", { class: "item" },
       el("div", { class: "main" },
-        el("div", { class: "name" }, m.resource_name, m.active ? null : el("span", { class: "badge oos", text: "Retired" })),
+        el("div", { class: "name" }, m.resource_name, m.active ? null : el("span", { class: "badge oos", text: "Retired" }),
+          m.active && m.resource_status === "out_of_service" ? el("span", { class: "badge oos", text: "Do not use" }) : null),
         el("div", { class: "meta", text: `${m.resource_code} · ${m.resource_type} · ${STATUS_LABEL[m.resource_status] || m.resource_status}` +
           (m.active_entries ? ` · ${m.active_entries} in queue` : "") })),
       el("div", { class: "row" },
+        ...(m.active ? useButtons(m.resource_id, m.resource_name, m.resource_status) : []),
         el("button", { class: "ghost small", type: "button", disabled: state.busy, onclick: async () => {
           const n = await askNote({ title: `Rename ${m.resource_name}`, label: "New name", okText: "Save" });
           if (n) act(() => rpc("admin_rename_machine", { p_resource_id: m.resource_id, p_name: n.note }), "Renamed."); } }, "Rename"),
