@@ -146,7 +146,14 @@ function relevantResources() {
 }
 const machineIds = () => [...relevantResources()].filter(isMachine);
 const instructorIds = () => [...relevantResources()].filter((id) => !isMachine(id));
+let lastPresence = 0;
+function touchPresence() {          // "I have the app open" — used to decide whether to send a LINE message
+  if (document.visibilityState !== "visible" || Date.now() - lastPresence < 45000) return;
+  lastPresence = Date.now();
+  sb.rpc("touch_presence").then(({ error }) => { if (error) lastPresence = 0; });
+}
 async function refreshAll() {
+  touchPresence();
   try {
     await Promise.all([loadOverview(), loadSession(), loadMachines()]);
     await Promise.all([...instructorIds().map(loadQueue), ...machineIds().map(loadMachineQueue),
