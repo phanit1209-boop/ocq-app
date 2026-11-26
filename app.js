@@ -725,6 +725,7 @@ function monthNav(cal, reload) {
     el("h3", { text: monthTitle(cal.y, cal.m) }),
     el("button", { class: "ghost small", type: "button", "aria-label": "Next month", disabled: idx >= 12, onclick: () => go(1) }, "›"));
 }
+const shortName = (n) => { const w = String(n || "").replace(/^\s*(dr\.?|ทพ\.?|ทพญ\.?|อ\.|อาจารย์|aj\.?)\s*/i, "").trim().split(/\s+/)[0] || "?"; return w.length > 7 ? w.slice(0, 6) + "…" : w; };
 const halfLabel = (h) => !h ? "" : h.state === "off" ? "✗" : h.state === "limited" ? "½" : "✓";
 function calGrid(cal, cell) {
   const g = el("div", { class: "cal" }, ...DAYS.map((d) => el("div", { class: "dow", text: d })));
@@ -878,24 +879,29 @@ function renderCalendar() {
   for (const [k, label] of [["all", "All"], ["internal", "Internal"], ["external", "External"]])
     seg.append(el("button", { type: "button", "aria-pressed": String(state.instFilter === k), onclick: () => { state.instFilter = k; clinicCal.summary = null; render(); } }, label));
   const rows = clinicCal.rows.filter(calFilter);
-  const per = new Map();      // iso -> {in:Set, off:Set}
+  const per = new Map();      // iso -> Map(user -> { name, AM, PM })
   for (const r of rows) {
-    if (!per.has(r.day)) per.set(r.day, { in: new Set(), off: new Set() });
-    per.get(r.day)[r.state === "off" ? "off" : "in"].add(r.user_id);
+    if (!per.has(r.day)) per.set(r.day, new Map());
+    const m = per.get(r.day);
+    if (!m.has(r.user_id)) m.set(r.user_id, { name: r.instructor_name });
+    m.get(r.user_id)[r.session] = r;
   }
   const now = bkkToday();
   const grid = calGrid(clinicCal, (iso) => {
-    const p = per.get(iso), nIn = p ? p.in.size : 0, nOff = p ? [...p.off].filter((u) => !p.in.has(u)).length : 0;
     const hol = clinicCal.hol.get(iso);
-    return el("button", { class: "cal-day" + (iso === now ? " today" : "") + (iso === clinicCal.selected ? " sel" : "") + (hol ? " holiday" : ""), type: "button", "data-day": iso, title: hol || "",
-      "aria-label": `${fmtDay(iso)}: ${nIn} in clinic, ${nOff} off`, onclick: () => { clinicCal.selected = iso; render(); } },
+    const people = [...(per.get(iso) || new Map()).values()].sort((a, b) => a.name.localeCompare(b.name));
+    const say = (p) => `${p.name}: morning ${p.AM ? (p.AM.state === "limited" ? p.AM.time_note : p.AM.state) : "–"}, afternoon ${p.PM ? (p.PM.state === "limited" ? p.PM.time_note : p.PM.state) : "–"}`;
+    return el("button", { class: "cal-day wide" + (iso === now ? " today" : "") + (iso === clinicCal.selected ? " sel" : "") + (hol ? " holiday" : ""), type: "button", "data-day": iso,
+      title: hol || "", "aria-label": `${fmtDay(iso)}${hol ? " (holiday)" : ""}: ${people.map(say).join("; ") || "no one scheduled"}`,
+      onclick: () => { clinicCal.selected = iso; render(); } },
       el("span", { class: "num", text: String(+iso.slice(8, 10)) }),
       hol ? el("span", { class: "hnote", text: "Holiday" }) : null,
-      nIn ? el("span", { class: "cnt in", text: `✓${nIn}` }) : null, nOff ? el("span", { class: "cnt off", text: `✗${nOff}` }) : null);
+      ...people.map((p) => el("span", { class: "who-row" }, el("span", { class: "who", text: shortName(p.name) }),
+        el("span", { class: "halves mini" }, ...["AM", "PM"].map((k) => el("span", { class: "half " + (p[k]?.state || "none"), text: halfLabel(p[k]) }))))));
   });
   box.append(el("div", { class: "card" }, el("h2", { text: "Clinic calendar" }), seg,
     monthNav(clinicCal, () => { clinicCal.selected = null; render(); loadClinicCalendar(true).then(render).catch((e) => banner(friendly(e), "error")); }),
-    grid, el("p", { class: "hint", text: "✓ instructors in clinic · ✗ usual clinic day marked off · Holiday = no usual clinic. Tap a date for names." })));
+    calLegend(), grid, el("p", { class: "hint", text: "Each name: left box = morning, right box = afternoon. ✓ in clinic · ½ part of the session · ✗ off. Tap a date for full names and times." })));
   if (clinicCal.selected && clinicCal.selected.slice(0, 7) === isoOf(clinicCal.y, clinicCal.m, 1).slice(0, 7)) box.append(dayDetail(clinicCal.selected, rows));
   if (isAdmin()) box.append(summaryCard(keepSummary), importCard(), holidaysCard());
 }
