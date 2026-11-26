@@ -26,6 +26,9 @@ const MESSAGES = {
   invalid_summary_frequency: "Choose Off, Weekly or Monthly.",
   invalid_summary_scope: "Choose what the summary should include.",
   invalid_status: "Choose a status.",
+  cannot_delete_self: "You can't delete your own account.",
+  user_in_progress: "This person is being checked or using a machine right now. Try again when they're done.",
+  invalid_event: "Check the event: a title (up to 60 characters, no < or >), and dates with the end on or after the start (at most 61 days).",
   invalid_holiday: "Choose a date and a name (up to 60 characters, no < or >).",
   invalid_days_off: "Check the dates: from today onwards, end on or after the start, at most 120 days.",
   too_many_days_off: "That's a lot of planned days off already. Remove some old ones first.",
@@ -736,6 +739,12 @@ const calLegend = () => el("div", { class: "legend" },
   el("span", {}, el("span", { class: "half in", text: "✓" }), "In clinic"), el("span", {}, el("span", { class: "half limited", text: "½" }), "Part of the session"),
   el("span", {}, el("span", { class: "half off", text: "✗" }), "Off"), calLegendHoliday());
 
+async function loadEvents(a, b) { return (await rpc("list_events", { p_from: a, p_to: b })) || []; }
+const KIND_WORD = { conference: "Conference", meeting: "Meeting", other: "Event" };
+const eventWhen = (e) => (e.from_time || e.until_time ? app_window(e.from_time, e.until_time) : e.session === "AM" ? "morning" : e.session === "PM" ? "afternoon" : "whole day");
+function app_window(f, u) { f = hhmm(f); u = hhmm(u); return f && u ? `${f}–${u}` : u ? `until ${u}` : `from ${f}`; }
+const eventsOn = (events, iso) => events.filter((e) => iso >= e.day_from && iso <= e.day_to);
+const eventLabel = (e) => `${e.title}` + (e.scope === "some" && e.instructor_names?.length ? ` (${e.instructor_names.map(shortName).join(", ")})` : "");
 async function loadHolidays(a, b) { return new Map(((await rpc("list_holidays", { p_from: a, p_to: b })) || []).map((h) => [h.day, h.name])); }
 const calLegendHoliday = () => el("span", {}, el("span", { class: "half hol", text: "H" }), "Holiday");
 // one instructor's month: green = usual clinic sessions; tap a date to mark it off or limit the hours
@@ -749,19 +758,20 @@ function instructorCalendar(userId, prefix, onChange) {
       const d = cal.days.get(iso) || {}, past = iso < now;
       const lim = d.AM?.state === "limited" ? d.AM : d.PM?.state === "limited" ? d.PM : null;
       const say = (k, w) => (d[k] ? `${w} ${d[k].state === "in" ? "in clinic" : d[k].state === "off" ? "off" : d[k].note}` : `${w} not scheduled`);
-      const hol = cal.hol.get(iso);
+      const hol = cal.hol.get(iso), evs = eventsOn(cal.events || [], iso).filter((e) => e.scope === "none" || (e.instructor_ids || []).includes(uid));
       return el("button", { class: "cal-day" + (iso === now ? " today" : "") + (hol ? " holiday" : ""), type: "button", disabled: past, "data-day": iso, title: hol || "",
         "aria-label": `${fmtDay(iso)}: ${say("AM", "morning")}, ${say("PM", "afternoon")}`, onclick: () => { if (!state.busy) editDay(iso, d); } },
         el("span", { class: "num", text: String(+iso.slice(8, 10)) }),
         el("span", { class: "halves" }, ...["AM", "PM"].map((k) => el("span", { class: "half " + (d[k]?.state || "none"), text: halfLabel(d[k]) }))),
-        lim ? el("span", { class: "tnote", text: lim.note }) : hol ? el("span", { class: "hnote", text: "Holiday" }) : null);
+        lim ? el("span", { class: "tnote", text: lim.note }) : hol ? el("span", { class: "hnote", text: "Holiday" }) : null,
+        ...evs.slice(0, 2).map((e) => el("span", { class: "enote", text: e.title })));
     }), el("p", { class: "hint", text: "Tap a date to mark it off, or to be in clinic only before / after / between certain times. Left half = morning, right half = afternoon." }));
   };
   async function load() {
     try {
       const [a, b] = monthRange(cal.y, cal.m);
       const [rows, hol] = await Promise.all([rpc("get_clinic_calendar", { p_from: a, p_to: b, p_user_id: uid }), loadHolidays(a, b)]);
-      cal.days = byDay(rows || []); cal.hol = hol;
+      cal.days = byDay(rows || []); cal.hol = hol; cal.events = await loadEvents(a, b);
     } catch (e) { banner(friendly(e), "error"); }
     draw();
   }
@@ -769,21 +779,25 @@ function instructorCalendar(userId, prefix, onChange) {
     const v = await askDay(iso, d);
     if (!v) return;
     act(async () => {
-      await rpc("clear_day_off", { p_user_id: userId, p_day: iso, p_session: "all" });
-      if (v.mode.startsWith("in_")) await rpc("add_clinic_day", { p_user_id: userId, p_day: iso, p_session: v.mode.slice(3) });
-      else if (v.mode.startsWith("off_")) await rpc("add_day_off", { p_user_id: userId, p_from: iso, p_to: iso, p_session: v.mode.slice(4), p_note: v.note });
-      else if (v.mode !== "schedule") await rpc("add_day_off", { p_user_id: userId, p_from: iso, p_to: iso, p_session: "all", p_note: v.note,
-        p_from_time: v.mode === "until" ? null : v.time, p_until_time: v.mode === "until" ? v.time : v.mode === "between" ? v.until : null });
+      await applyDayChoice(userId, iso, v);
       await load(); if (onChange) await onChange();
     }, v.mode === "schedule" ? `${fmtDay(iso)}: back to the usual schedule.` : `${fmtDay(iso)} saved.`);
   }
   draw(); load();
   return { node: wrap, reload: load };
 }
-function askDay(iso, d) {
+// one date for one instructor: clear what was planned, then save the new choice (off / extra / only until-from-between)
+async function applyDayChoice(userId, iso, v) {
+  await rpc("clear_day_off", { p_user_id: userId, p_day: iso, p_session: "all" });
+  if (v.mode.startsWith("in_")) await rpc("add_clinic_day", { p_user_id: userId, p_day: iso, p_session: v.mode.slice(3) });
+  else if (v.mode.startsWith("off_")) await rpc("add_day_off", { p_user_id: userId, p_from: iso, p_to: iso, p_session: v.mode.slice(4), p_note: v.note });
+  else if (v.mode !== "schedule") await rpc("add_day_off", { p_user_id: userId, p_from: iso, p_to: iso, p_session: "all", p_note: v.note,
+    p_from_time: v.mode === "until" ? null : v.time, p_until_time: v.mode === "until" ? v.time : v.mode === "between" ? v.until : null });
+}
+function askDay(iso, d, who = "") {
   return new Promise((resolve) => {
     const dlg = $("dayDialog"), t = $("dayTime"), u = $("dayUntilTime");
-    $("dayTitle").textContent = fmtDay(iso);
+    $("dayTitle").textContent = (who ? who + " · " : "") + fmtDay(iso);
     for (const sel of [t, u]) if (!sel.options.length) for (let h = 7; h <= 18; h++) for (const m of [0, 15, 30, 45]) {
       const v = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`; sel.append(el("option", { value: v, text: v })); }
     t.value = "10:00"; u.value = "12:00"; $("dayNote").value = "";
@@ -877,8 +891,8 @@ async function loadClinicCalendar(force = false) {
   if (clinicCal.anchor === null) { let t = bkkToday(); if ([0, 6].includes(weekdayOf(t))) t = mondayOf(t); clinicCal.anchor = t; }
   const [a, b] = clinicRange(), key = a + b;
   if (!force && clinicCal.loadedKey === key && Date.now() - (clinicCal.at || 0) < 50000) return;
-  const [rows, hol] = await Promise.all([rpc("get_clinic_calendar", { p_from: a, p_to: b }), loadHolidays(a, b)]);
-  clinicCal.rows = rows || []; clinicCal.hol = hol;
+  const [rows, hol, evs] = await Promise.all([rpc("get_clinic_calendar", { p_from: a, p_to: b }), loadHolidays(a, b), loadEvents(a, b)]);
+  clinicCal.rows = rows || []; clinicCal.hol = hol; clinicCal.events = evs;
   clinicCal.loadedKey = key; clinicCal.at = Date.now();
 }
 const calFilter = (r) => (clinicCal.who === "all" ? state.instFilter === "all" || (r.instructor_kind || "internal") === state.instFilter : r.resource_id === clinicCal.who);
@@ -907,7 +921,7 @@ function peopleByDay(rows) {        // iso -> [{ name, kind, AM, PM }] sorted by
   for (const r of rows) {
     if (!per.has(r.day)) per.set(r.day, new Map());
     const m = per.get(r.day);
-    if (!m.has(r.user_id)) m.set(r.user_id, { name: r.instructor_name, kind: r.instructor_kind });
+    if (!m.has(r.user_id)) m.set(r.user_id, { user: r.user_id, name: r.instructor_name, kind: r.instructor_kind });
     m.get(r.user_id)[r.session] = r;
   }
   const out = new Map();
@@ -941,6 +955,8 @@ function renderCalendar() {
     el("button", { class: "ghost small", type: "button", "aria-label": "Next", onclick: () => clinicStep(1) }, "›"));
   // all instructors: show only who is in (off sessions are left out so the calendar stays clear); one instructor: show their ✗ too
   const rows = clinicCal.rows.filter(calFilter).filter((r) => one || r.state !== "off"), per = peopleByDay(rows), now = bkkToday();
+  const whoUser = one ? clinicCal.rows.find((r) => r.resource_id === clinicCal.who)?.user_id : null;
+  const evsFor = (iso) => eventsOn(clinicCal.events || [], iso).filter((e) => !one || e.scope === "none" || (e.instructor_ids || []).includes(whoUser));
   let body;
   if (clinicCal.view === "month" || clinicCal.view === "2month") {
     const [a] = clinicRange(), y0 = +a.slice(0, 4), m0 = +a.slice(5, 7) - 1;
@@ -952,6 +968,8 @@ function renderCalendar() {
         onclick: () => clinicGo(() => { clinicCal.anchor = iso; clinicCal.view = "day"; }) },
         el("span", { class: "num", text: String(+iso.slice(8, 10)) }),
         hol ? el("span", { class: "hnote", text: "Holiday" }) : null,
+        ...evsFor(iso).slice(0, 2).map((e) => el("span", { class: "enote", text: e.title })),
+        evsFor(iso).length > 2 ? el("span", { class: "enote", text: `+${evsFor(iso).length - 2} more` }) : null,
         ...people.map((p) => el("span", { class: "who-row" }, one ? null : el("span", { class: "who", text: shortName(p.name) }),
           el("span", { class: "halves" + (one ? "" : " mini") }, ...["AM", "PM"].map((k) => el("span", { class: "half " + (p[k]?.state || "none"), text: halfLabel(p[k]) }))))),
         one && people[0] && (people[0].AM?.state === "limited" || people[0].PM?.state === "limited")
@@ -967,16 +985,23 @@ function renderCalendar() {
     for (let d = a; d <= b; d = addDays(d, 1)) if (![0, 6].includes(weekdayOf(d))) days.push(d);
     body = el("div", { class: "day-list", id: "calDays" }, ...days.flatMap((iso, i) => [
       clinicCal.view === "2week" && i === 5 ? el("div", { class: "section-title", text: "Next week" }) : null,
-      dayBlock(iso, per.get(iso) || [], clinicCal.view !== "day")].filter(Boolean)));
+      dayBlock(iso, per.get(iso) || [], clinicCal.view !== "day", evsFor(iso))].filter(Boolean)));
   }
   box.append(el("div", { class: "card" }, el("h2", { text: "Clinic calendar" }), views, pick, one ? null : seg, nav,
     calLegend(), body,
     el("p", { class: "hint", text: clinicCal.view === "month" || clinicCal.view === "2month"
       ? (one ? "Left box = morning, right box = afternoon. Tap a date for details." : "Only instructors who are in are listed. Each name: left box = morning, right box = afternoon. Tap a date to see that day.")
       : one ? "✓ in clinic · ½ part of the session (times shown) · ✗ off." : "Only instructors who are in are listed. ✓ in clinic · ½ part of the session (times shown)." })));
-  if (isAdmin()) box.append(summaryCard(keepSummary), importCard(), holidaysCard());
+  if (isAdmin()) box.append(summaryCard(keepSummary), eventsCard(), importCard(), holidaysCard());
 }
-function dayBlock(iso, people, tappable) {
+const canEditDay = (uid) => isAdmin() || (state.profile.role === "instructor" && uid === state.profile.user_id);
+async function editPersonDay(p, iso) {
+  const v = await askDay(iso, { AM: p.AM ? { state: p.AM.state, note: p.AM.time_note } : undefined, PM: p.PM ? { state: p.PM.state, note: p.PM.time_note } : undefined }, p.name);
+  if (!v) return;
+  act(async () => { await applyDayChoice(p.user, iso, v); await loadClinicCalendar(true); },
+    v.mode === "schedule" ? `${p.name}, ${fmtDay(iso)}: back to the usual schedule.` : `${p.name}, ${fmtDay(iso)} saved.`);
+}
+function dayBlock(iso, people, tappable, events = []) {
   const hol = clinicCal.hol.get(iso);
   const pill = (h, word) => el("span", { class: "pill half " + (h?.state || "none") }, `${word} ${h ? halfLabel(h) : "–"}`);
   return el("div", { class: "day-block" + (iso === bkkToday() ? " today" : "") + (hol ? " holiday" : ""), "data-day": iso },
@@ -987,16 +1012,21 @@ function dayBlock(iso, people, tappable) {
         if (!(await askConfirm(`Remove the holiday on ${fmtDay(iso)} (${hol})? Usual clinic days will show again.`))) return;
         act(async () => { await rpc("admin_remove_holiday", { p_day: iso }); holState.list = null; await loadClinicCalendar(true); }, "Holiday removed.");
       } }, "Remove holiday") : null),
+    ...events.map((e) => el("div", { class: "event-line" }, el("b", { text: `${KIND_WORD[e.kind] || "Event"}: ${e.title}` }),
+      ` · ${eventWhen(e)}${e.day_from !== e.day_to ? ` (${dm(e.day_from)}–${dm(e.day_to)})` : ""}`,
+      e.scope === "some" ? ` · away: ${(e.instructor_names || []).join(", ")}` : " · note only")),
     people.length ? el("ul", { class: "inst-lines" }, ...people.map((p) => {
       const lim = p.AM?.state === "limited" ? p.AM : p.PM?.state === "limited" ? p.PM : null;
       return el("li", { class: "inst-line" },
-        el("span", { class: "iname" }, p.name, p.kind === "external" ? el("span", { class: "badge", text: "ext" }) : null),
+        el("span", { class: "iname" }, canEditDay(p.user) && iso >= bkkToday()
+          ? el("button", { class: "linkish name-edit", type: "button", "data-uid": p.user, title: "Change this day", onclick: () => editPersonDay(p, iso) }, p.name, " ✎")
+          : p.name, p.kind === "external" ? el("span", { class: "badge", text: "ext" }) : null),
         el("span", { class: "pills" }, pill(p.AM, "AM"), pill(p.PM, "PM")),
         lim ? el("span", { class: "tnote", text: "only " + lim.time_note }) : null);
     })) : el("p", { class: "empty small", text: hol ? "No clinic." : "No one scheduled." }));
 }
 // "Dr Bee: ✓ 2/12, 4/12 (until 10:00) ✗ 11/12" for this month (from today) and next month
-function buildSummary(rows, fromIso, toIso, hol = new Map()) {
+function buildSummary(rows, fromIso, toIso, hol = new Map(), events = []) {
   const people = new Map();
   for (const r of rows.filter(calFilter)) {
     if (!people.has(r.user_id)) people.set(r.user_id, { name: r.instructor_name, kind: r.instructor_kind || "internal", days: new Map() });
@@ -1023,6 +1053,8 @@ function buildSummary(rows, fromIso, toIso, hol = new Map()) {
     out.push(...ps.map(line));
   }
   if (hol.size) out.push("", "Holidays: " + [...hol.keys()].sort().map(dm).join(", "));
+  if (events.length) out.push("", "Events:", ...events.map((e) => `• ${e.title} ${e.day_from === e.day_to ? dm(e.day_from) : `${dm(e.day_from)}–${dm(e.day_to)}`}` +
+    (eventWhen(e) !== "whole day" ? ` ${eventWhen(e)}` : "") + (e.scope === "some" ? ` (${(e.instructor_names || []).join(", ")})` : "")));
   if (!list.length) out.push("", "No instructors scheduled.");
   return out.join("\n");
 }
@@ -1229,7 +1261,11 @@ function importCard() {
         rows.set(P.user, offs || []);
       }));
       const hol = await loadHolidays(today, isoOf(+today.slice(0, 4), +today.slice(5, 7) + 13, 0));
-      const changes = planCalendarChanges(persons, (u, d) => (hol.has(d) ? new Set() : usual.get(u)(d)),
+      const evs = await loadEvents(today, isoOf(+today.slice(0, 4), +today.slice(5, 7) + 13, 0));
+      const evSessions = (u, d) => new Set(eventsOn(evs, d).filter((e) => e.scope === "some" && (e.instructor_ids || []).includes(u)).flatMap((e) =>
+        e.from_time || e.until_time ? ["AM", "PM"].filter((k) => (!e.from_time || hhmm(e.from_time) < (k === "AM" ? "12:00" : "16:00")) && (!e.until_time || hhmm(e.until_time) > (k === "AM" ? "08:45" : "12:45")))
+          : e.session === "all" ? ["AM", "PM"] : [e.session]));
+      const changes = planCalendarChanges(persons, (u, d) => (hol.has(d) ? new Set() : new Set([...usual.get(u)(d)].filter((k) => !evSessions(u, d).has(k)))),
         (u, d) => rows.get(u).some((x) => d >= x.day_from && d <= x.day_to), today);
       importState.preview = { changes, problems }; show();
     } catch (e) { banner(friendly(e), "error"); }
@@ -1241,6 +1277,75 @@ function importCard() {
       "Check shows every change before anything is saved." }),
     tbl, paste, el("div", { class: "row end" }, check, apply), prev);
   return card;
+}
+// ---------- conferences & events (admins) — they never close the clinic; chosen instructors show as away ----------
+const evState = { list: null, editing: null };    // editing: null | "new" | event object
+async function loadEventAdmin() { const t = bkkToday(); evState.list = await loadEvents(addDays(t, -1), isoOf(+t.slice(0, 4) + 2, 0, 0)); }
+function eventsCard() {
+  const card = el("div", { class: "card", id: "calEvents" }, el("h2", { text: "Conferences & events" }),
+    el("p", { class: "hint", text: "The clinic stays open. Instructors you choose show as away for the sessions the event covers. Titles are visible to everyone – no patient details." }));
+  if (!evState.list || !state.people.length) { card.append(el("p", { class: "empty", text: "Loading…" }));
+    Promise.all([loadEventAdmin(), state.people.length ? null : loadPeople()]).then(render).catch((e) => banner(friendly(e), "error")); return card; }
+  if (evState.editing) { card.append(eventForm(evState.editing === "new" ? null : evState.editing)); return card; }
+  card.append(el("ul", { class: "list compact", id: "evList" }, ...(evState.list.length ? evState.list.map((e) => el("li", { class: "item" },
+    el("div", { class: "main" }, el("div", { class: "name", text: `${e.title}` }),
+      el("div", { class: "meta", text: `${KIND_WORD[e.kind]} · ${e.day_from === e.day_to ? fmtDay(e.day_from) : `${fmtDay(e.day_from)} – ${fmtDay(e.day_to)}`} · ${eventWhen(e)}` +
+        (e.scope === "some" ? ` · away: ${(e.instructor_names || []).join(", ")}` : " · note only") })),
+    el("button", { class: "ghost small", type: "button", onclick: () => { evState.editing = e; render(); } }, "Edit"),
+    el("button", { class: "ghost small", type: "button", disabled: state.busy, onclick: async () => {
+      if (!(await askConfirm(`Remove "${e.title}"?`))) return;
+      act(async () => { await rpc("admin_remove_event", { p_event_id: e.event_id }); await loadEventAdmin(); await loadClinicCalendar(true); }, "Event removed.");
+    } }, "Remove")))
+    : [el("li", { class: "empty", text: "No upcoming events." })])),
+    el("div", { class: "row end" }, el("button", { class: "primary", type: "button", id: "evNew", onclick: () => { evState.editing = "new"; render(); } }, "Add an event")));
+  return card;
+}
+function eventForm(e) {
+  const today = bkkToday();
+  const title = el("input", { type: "text", id: "evTitle", maxlength: "60", placeholder: "e.g. AAO Annual Session" }); title.value = e?.title || "";
+  const kind = el("select", { id: "evKind", "aria-label": "Type" }, ...Object.entries(KIND_WORD).map(([v, t]) => el("option", { value: v, text: t }))); kind.value = e?.kind || "conference";
+  const from = el("input", { type: "date", id: "evFrom" }); from.value = e?.day_from || today;
+  const to = el("input", { type: "date", id: "evTo" }); to.value = e?.day_to || from.value;
+  from.addEventListener("change", () => { if (to.value < from.value) to.value = from.value; });
+  const part = el("select", { id: "evPart", "aria-label": "Part of the day" },
+    el("option", { value: "all", text: "Whole day" }), el("option", { value: "AM", text: "Morning" }), el("option", { value: "PM", text: "Afternoon" }), el("option", { value: "times", text: "Set times…" }));
+  part.value = e && (e.from_time || e.until_time) ? "times" : e?.session || "all";
+  const t1 = el("select", { id: "evTimeFrom", "aria-label": "From" }, el("option", { value: "", text: "From (start of day)" }));
+  const t2 = el("select", { id: "evTimeTo", "aria-label": "Until" }, el("option", { value: "", text: "Until (end of day)" }));
+  for (let h = 7; h <= 18; h++) for (const m of [0, 15, 30, 45]) { const v = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`; t1.append(el("option", { value: v, text: v })); t2.append(el("option", { value: v, text: v })); }
+  t1.value = hhmm(e?.from_time) || "08:00"; t2.value = hhmm(e?.until_time) || "12:00";
+  const times = el("div", { class: "row", id: "evTimes" }, t1, t2);
+  const scope = el("select", { id: "evScope", "aria-label": "Who is away" },
+    el("option", { value: "some", text: "Chosen instructors are away" }), el("option", { value: "none", text: "Note only (no one away)" }));
+  scope.value = e?.scope || "some";
+  const inst = state.people.filter((u) => u.role === "instructor" && u.active)
+    .sort((x, y) => ((x.instructor_kind || "internal") === "external") - ((y.instructor_kind || "internal") === "external") || x.display_name.localeCompare(y.display_name));
+  const chosen = new Set(e?.instructor_ids || []);
+  const picks = el("div", { class: "ev-picks", id: "evPicks" }, ...inst.map((u) => {
+    const cb = el("input", { type: "checkbox", "data-uid": u.user_id }); cb.checked = chosen.has(u.user_id);
+    return el("label", { class: "choice" }, cb, " " + u.display_name + (u.instructor_kind === "external" ? " (ext)" : ""));
+  }));
+  const sync = () => { times.classList.toggle("hidden", part.value !== "times"); picks.classList.toggle("hidden", scope.value !== "some"); };
+  part.addEventListener("change", sync); scope.addEventListener("change", sync); sync();
+  const save = el("button", { class: "primary", type: "button", id: "evSave", disabled: state.busy, onclick: () => {
+    const nm = title.value.replace(/\s+/g, " ").trim();
+    const ids = [...picks.querySelectorAll("input:checked")].map((c) => c.dataset.uid).filter(Boolean);
+    if (!nm || nm.length > 60 || /[<>]/.test(nm) || !from.value || !to.value || to.value < from.value) { banner(MESSAGES.invalid_event, "error"); return; }
+    if (scope.value === "some" && !ids.length) { banner("Choose who is away, or pick “Note only”.", "error"); return; }
+    if (part.value === "times" && t1.value && t2.value && t2.value <= t1.value) { banner("The end time must be after the start time.", "error"); return; }
+    act(async () => {
+      await rpc("admin_save_event", { p_event_id: e?.event_id || null, p_title: nm, p_kind: kind.value, p_from: from.value, p_to: to.value,
+        p_session: part.value === "times" ? "all" : part.value, p_from_time: part.value === "times" ? (t1.value || null) : null,
+        p_until_time: part.value === "times" ? (t2.value || null) : null, p_scope: scope.value, p_user_ids: scope.value === "some" ? ids : [] });
+      evState.editing = null; await loadEventAdmin(); await loadClinicCalendar(true);
+    }, e ? "Event updated." : "Event added.");
+  } }, e ? "Save changes" : "Add event");
+  return el("div", { class: "ev-form", id: "evForm" },
+    el("label", { for: "evTitle", text: "Title" }), title, el("label", { for: "evKind", text: "Type" }), kind,
+    el("div", { class: "row" }, el("label", { for: "evFrom", text: "From" }), from, el("label", { for: "evTo", text: "To" }), to),
+    el("label", { for: "evPart", text: "Part of the day" }), part, times,
+    el("label", { for: "evScope", text: "Who is away" }), scope, picks,
+    el("div", { class: "row end" }, el("button", { class: "ghost", type: "button", onclick: () => { evState.editing = null; render(); } }, "Cancel"), save));
 }
 // ---------- holidays (admins) ----------
 const holState = { list: null, status: null };
@@ -1288,8 +1393,8 @@ function summaryCard(keep) {
   const make = el("button", { class: "primary", type: "button", id: "calSummaryMake", disabled: state.busy, onclick: async () => {
     try {
       const t = bkkToday(), y = +t.slice(0, 4), m = +t.slice(5, 7) - 1, end = isoOf(y, m + 2, 0);
-      const [rows, hol] = await Promise.all([rpc("get_clinic_calendar", { p_from: t, p_to: end }), loadHolidays(t, end)]);
-      clinicCal.summary = buildSummary(rows || [], t, end, hol); render();
+      const [rows, hol, evs] = await Promise.all([rpc("get_clinic_calendar", { p_from: t, p_to: end }), loadHolidays(t, end), loadEvents(t, end)]);
+      clinicCal.summary = buildSummary(rows || [], t, end, hol, evs); render();
     } catch (e) { banner(friendly(e), "error"); }
   } }, clinicCal.summary ? "Make again" : "Make summary");
   card.append(el("div", { class: "row" }, make));
@@ -1408,7 +1513,16 @@ function personEditor(u) {
         if (r === "instructor" && k === "internal" && readSlots) await rpc("admin_set_schedule", { p_user_id: u.user_id, p_slots: readSlots() });
         state.editingPerson = null; $("peopleTab").replaceChildren(); await loadPeople();
       }, `Saved ${nm}.`);
-    } }, "Save")));
+    } }, "Save")),
+    u.user_id === state.profile.user_id ? null : el("div", { class: "danger-zone" },
+      el("button", { class: "danger", type: "button", id: "pDelete", disabled: state.busy, onclick: async () => {
+        if (!(await askConfirm(`Delete ${u.display_name}'s account? This can't be undone. Their name, email, schedule and days off are removed and they are signed out. ` +
+          "Past queue records stay as \"Deleted user\". If they sign in with LINE again they start as a new account."))) return;
+        act(async () => {
+          await rpc("admin_delete_user", { p_user_id: u.user_id, p_confirm: true });
+          state.editingPerson = null; $("peopleTab").replaceChildren(); await loadPeople();
+        }, `${u.display_name}'s account was deleted.`);
+      } }, "Delete account")));
   return box;
 }
 

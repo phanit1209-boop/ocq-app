@@ -238,3 +238,9 @@ details.range-add { margin-top: 10px; } details.range-add summary { cursor: poin
 .import-table tr.group td { font-size: 12px; font-weight: 600; color: var(--slate); padding-top: 6px; }
 #calView button { padding: 8px 4px; font-size: 14px; }
 .months { display: flex; flex-direction: column; gap: 10px; }
+.enote { font-size: 10px; line-height: 12px; color: #6b4fbb; background: #efeafc; border-radius: 4px; padding: 0 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.event-line { font-size: 13px; color: #4b3a8f; background: #f3effd; border-radius: 10px; padding: 6px 8px; margin: 0 0 6px; }
+.ev-picks { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; margin-top: 6px; }
+.ev-picks .choice { font-size: 14px; }
+.name-edit { font-weight: 400; font-size: 15px; text-decoration: none; border-bottom: 1px dashed var(--muted); }
+.danger-zone { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; }
