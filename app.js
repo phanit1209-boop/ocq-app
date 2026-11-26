@@ -760,7 +760,7 @@ function personEditor(u) {
 }
 
 // ---------- privacy notice ----------
-const PRIVACY_NOTICE_VERSION = 1;
+const PRIVACY_NOTICE_VERSION = 2;   // v2 (26 Nov 2026): open sign-up, self admin, email, "What for?", LINE messages
 function setPrivacyLang(lang) {
   $("privacyTextEn").classList.toggle("hidden", lang !== "en");
   $("privacyTextTh").classList.toggle("hidden", lang !== "th");

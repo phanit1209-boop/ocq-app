@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
   <title>Ortho Clinic Queue</title>
-  <link rel="stylesheet" href="styles.css?v=202611260944">
+  <link rel="stylesheet" href="styles.css?v=202611260953">
 </head>
 <body>
   <header class="topbar">
@@ -203,11 +203,14 @@
           <li>your name or nickname and role</li>
           <li>your LINE account ID, LINE display name and profile picture link</li>
           <li>your queue activity: when you joined, waited, were checked or left</li>
+          <li>for instructors: your clinic schedule and today's status</li>
+          <li>your email, only if you add one for a summary</li>
         </ul>
-        <p>It is used only to run the queues, prevent misuse and summarise clinic workload for the department. People in the same queue and the instructor see your position, name and dental unit. Urgent reasons are seen only by you, the instructor and admins.</p>
-        <p>Data is stored on Supabase servers in Singapore. Urgent reasons are removed after 30 days and activity records after 12 months.</p>
+        <p>It is used only to run the queues, prevent misuse, send LINE messages and summarise clinic workload. People in the same queue and the instructor see your position, name and dental unit. Urgent reasons and "What for?" notes are seen only by you, the instructor and admins. Your email is seen only by you and admins.</p>
+        <p>Anyone with LINE can sign up and choose to be an admin. Admins can change or disable any account, and every change is recorded.</p>
+        <p>Data is stored on Supabase servers in Singapore. Urgent reasons and "What for?" notes are removed after 30 days and activity records after 12 months.</p>
         <p class="warn strong">Never enter patient names, HN or clinical details in this app.</p>
-        <p class="hint">To see, correct or delete your data, contact the queue administrator.</p>
+        <p class="hint">To see, correct or delete your data, contact the clinic admin, Dr Phanit Asavanamuang.</p>
       </div>
       <div id="privacyTextTh" class="privacyText hidden" lang="th">
         <p>แอปนี้ใช้จัดคิวในคลินิกสำหรับบุคลากร MU Ortho โดยจัดเก็บ:</p>
@@ -215,11 +218,14 @@
           <li>ชื่อหรือชื่อเล่น และบทบาทของท่าน</li>
           <li>LINE ID ชื่อที่แสดงใน LINE และลิงก์รูปโปรไฟล์</li>
           <li>ประวัติการใช้คิว เช่น เวลาเข้าคิว รอ ได้รับการตรวจ หรือออกจากคิว</li>
+          <li>สำหรับอาจารย์: ตารางออกตรวจและสถานะวันนี้</li>
+          <li>อีเมล เฉพาะกรณีที่ท่านเพิ่มเพื่อรับสรุปข้อมูล</li>
         </ul>
-        <p>ข้อมูลใช้เพื่อจัดคิว ป้องกันการใช้งานผิดวัตถุประสงค์ และสรุปภาระงานของคลินิกให้ภาควิชาเท่านั้น ผู้ที่อยู่ในคิวเดียวกันและอาจารย์จะเห็นลำดับ ชื่อ และหมายเลขยูนิตของท่าน ส่วนเหตุผลกรณีเร่งด่วนจะเห็นได้เฉพาะท่าน อาจารย์ผู้ตรวจ และผู้ดูแลระบบ</p>
-        <p>ข้อมูลจัดเก็บบนเซิร์ฟเวอร์ Supabase ที่สิงคโปร์ เหตุผลกรณีเร่งด่วนจะถูกลบหลัง 30 วัน และประวัติการใช้งานหลัง 12 เดือน</p>
+        <p>ข้อมูลใช้เพื่อจัดคิว ป้องกันการใช้งานผิดวัตถุประสงค์ ส่งข้อความ LINE และสรุปภาระงานของคลินิกเท่านั้น ผู้ที่อยู่ในคิวเดียวกันและอาจารย์จะเห็นลำดับ ชื่อ และหมายเลขยูนิตของท่าน ส่วนเหตุผลกรณีเร่งด่วนและหมายเหตุ "ตรวจอะไร" จะเห็นได้เฉพาะท่าน อาจารย์ผู้ตรวจ และผู้ดูแลระบบ อีเมลของท่านเห็นได้เฉพาะท่านและผู้ดูแลระบบ</p>
+        <p>ผู้ที่มี LINE สามารถสมัครใช้งานและเลือกเป็นผู้ดูแลระบบได้ ผู้ดูแลระบบแก้ไขหรือปิดบัญชีใดก็ได้ และทุกการเปลี่ยนแปลงจะถูกบันทึก</p>
+        <p>ข้อมูลจัดเก็บบนเซิร์ฟเวอร์ Supabase ที่สิงคโปร์ เหตุผลกรณีเร่งด่วนและหมายเหตุ "ตรวจอะไร" จะถูกลบหลัง 30 วัน และประวัติการใช้งานหลัง 12 เดือน</p>
         <p class="warn strong">ห้ามกรอกชื่อผู้ป่วย HN หรือข้อมูลทางคลินิกใด ๆ ในแอปนี้</p>
-        <p class="hint">หากต้องการขอดู แก้ไข หรือลบข้อมูล กรุณาติดต่อผู้ดูแลระบบคิว</p>
+        <p class="hint">หากต้องการขอดู แก้ไข หรือลบข้อมูล กรุณาติดต่อผู้ดูแลระบบคลินิก ทพ.พนิต อัศวหน้าเมือง</p>
       </div>
       <div class="row end" style="margin-top:14px">
         <button value="ok" class="primary" id="privacyOk" type="submit" autofocus>I understand · รับทราบ</button>
@@ -229,7 +235,7 @@
 
   <footer class="footer"><button type="button" class="linkish" id="privacyLink">Privacy notice</button></footer>
 
-  <script src="config.js?v=202611260944"></script>
-  <script type="module" src="app.js?v=202611260944"></script>
+  <script src="config.js?v=202611260953"></script>
+  <script type="module" src="app.js?v=202611260953"></script>
 </body>
 </html>
