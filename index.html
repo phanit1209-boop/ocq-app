@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
   <title>Ortho Clinic Queue</title>
-  <link rel="stylesheet" href="styles.css?v=202611260855">
+  <link rel="stylesheet" href="styles.css?v=202611260911">
 </head>
 <body>
   <header class="topbar">
@@ -105,6 +105,22 @@
     </form>
   </dialog>
 
+  <dialog id="statusDialog">
+    <form method="dialog">
+      <h1 id="statusTitle">Status today</h1>
+      <p class="hint">For today only. Tomorrow it goes back to the weekly schedule.</p>
+      <label class="choice"><input type="radio" name="statusMode" value="active" id="statusActive"> Active (rest of today)</label>
+      <label class="choice"><input type="radio" name="statusMode" value="until" id="statusUntil"> Active until…</label>
+      <label class="choice"><input type="radio" name="statusMode" value="from" id="statusFrom"> Active from…</label>
+      <label class="choice"><input type="radio" name="statusMode" value="inactive" id="statusInactive"> Not in clinic today</label>
+      <label class="choice"><input type="radio" name="statusMode" value="schedule" id="statusSchedule"> Follow my weekly schedule</label>
+      <div id="statusTimeBox" class="hidden"><label for="statusTime">Time</label><select id="statusTime"></select></div>
+      <div class="row end" style="margin-top:14px">
+        <button value="cancel" class="ghost" type="submit" formnovalidate>Cancel</button>
+        <button value="ok" class="primary" id="statusOk" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="unitDialog">
     <form method="dialog">
       <h1 id="unitTitle">Which dental unit are you at?</h1>
@@ -198,7 +214,7 @@
 
   <footer class="footer"><button type="button" class="linkish" id="privacyLink">Privacy notice</button></footer>
 
-  <script src="config.js?v=202611260855"></script>
-  <script type="module" src="app.js?v=202611260855"></script>
+  <script src="config.js?v=202611260911"></script>
+  <script type="module" src="app.js?v=202611260911"></script>
 </body>
 </html>

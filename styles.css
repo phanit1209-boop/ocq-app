@@ -146,3 +146,8 @@ table.sched th, table.sched td { padding: 4px; text-align: left; font-size: 14px
 table.sched select { width: 100%; }
 .item.person.off { opacity: .6; }
 li.editor { display: flex; flex-direction: column; gap: 8px; }
+
+.badge.active { background: #e3f6ea; color: #137a3a; }
+.badge.inactive { background: #eef0f2; color: #667; }
+.status-line { justify-content: space-between; align-items: center; margin: 2px 0 8px; }
+#statusDialog label.choice { display: flex; margin: 6px 0; }

@@ -20,6 +20,8 @@ const isStaff = () => isAdmin() || state.profile?.role === "technician";
 
 const MESSAGES = {
   invalid_role: "Choose Resident or Instructor.",
+  invalid_status: "Choose a status.",
+  invalid_status_time: "Choose a time later than now.",
   invalid_instructor_kind: "Choose Internal or External.",
   instructor_queue_not_empty: "Your queue still has people in it. Finish or wait for it to empty first.",
   leave_queues_first: "Leave the instructor queues you are waiting in first.",
@@ -326,8 +328,34 @@ function renderAll() {
   const shown = state.overview.filter((r) => state.instFilter === "all" || (r.instructor_kind || "internal") === state.instFilter);
   if (!shown.length) { box.append(el("p", { class: "empty", text: state.overview.length ? "No instructors in this group." : "No instructors are available." })); return; }
   const onDuty = shown.filter((r) => r.on_duty), others = shown.filter((r) => !r.on_duty);
-  if (onDuty.length) { box.append(el("div", { class: "section-title", text: "In clinic this session" })); box.append(instructorList(onDuty)); }
-  if (others.length) { if (onDuty.length) box.append(el("div", { class: "section-title", text: "Other instructors" })); box.append(instructorList(others)); }
+  if (onDuty.length) { box.append(el("div", { class: "section-title", text: "Active now" })); box.append(instructorList(onDuty)); }
+  if (others.length) { if (onDuty.length) box.append(el("div", { class: "section-title", text: "Not active now" })); box.append(instructorList(others)); }
+}
+function statusBadge(r) {
+  const note = r.status_note && r.status_note !== "scheduled" ? ` · ${r.status_note}` : (r.status_note === "scheduled" ? " · scheduled" : "");
+  return el("span", { class: "badge " + (r.on_duty ? "active" : "inactive"), text: (r.on_duty ? "Active" : "Inactive") + note });
+}
+function askStatus(name) {
+  return new Promise((resolve) => {
+    const d = $("statusDialog"), t = $("statusTime");
+    $("statusTitle").textContent = `Status today: ${name}`;
+    if (!t.options.length) for (let h = 7; h <= 18; h++) for (const m of [0, 15, 30, 45]) {
+      const v = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`; t.append(el("option", { value: v, text: v })); }
+    t.value = "10:00"; $("statusActive").checked = true;
+    const sync = () => $("statusTimeBox").classList.toggle("hidden", !($("statusUntil").checked || $("statusFrom").checked));
+    for (const r of d.querySelectorAll("input[name=statusMode]")) r.onchange = sync; sync();
+    d.onclose = () => {
+      if (d.returnValue !== "ok") return resolve(null);
+      const mode = d.querySelector("input[name=statusMode]:checked").value;
+      resolve({ mode, time: mode === "until" || mode === "from" ? t.value : null });
+    };
+    d.showModal();
+  });
+}
+async function setStatus(r, isOwner) {
+  const v = await askStatus(r.resource_name);
+  if (!v) return;
+  act(() => rpc("set_instructor_status", { p_resource_id: isOwner ? null : r.resource_id, p_mode: v.mode, p_time: v.time }), "Status updated.");
 }
 function instructorList(rows) {
   const list = el("ul", { class: "list" });
@@ -338,7 +366,7 @@ function instructorList(rows) {
       el("div", { class: "main" },
         el("div", { class: "name" }, r.resource_name, r.instructor_kind === "external" ? el("span", { class: "badge", text: "external" }) : null,
           r.has_check_in_progress ? el("span", { class: "badge progress", text: "checking" }) : null,
-          r.resource_status !== "available" ? el("span", { class: "badge urgent", text: "unavailable" }) : null),
+          r.resource_status !== "available" ? el("span", { class: "badge urgent", text: "unavailable" }) : null, statusBadge(r)),
         el("div", { class: "meta", text: r.my_queue_entry_id
           ? (r.my_status === "in_progress" ? "You are being checked now" : `You are #${r.my_waiting_position} in line`)
           : (r.has_check_in_progress ? "Checking a resident now" : "Tap to see the queue") })),
@@ -382,7 +410,10 @@ function updateJoinForm(r) {
 function renderQueueBlock(r) {
   const rows = state.queues.get(r.resource_id) || [];
   const isOwner = r.is_my_resource && state.profile.role === "instructor";
+  const canSet = isOwner || isAdmin();
   const wrap = el("div", { class: "card" }, el("h2", { text: r.resource_name }),
+    el("div", { class: "row status-line" }, statusBadge(r),
+      canSet ? el("button", { class: "ghost small", type: "button", disabled: state.busy, onclick: () => setStatus(r, isOwner) }, "Set status") : null),
     el("div", { class: "meta", text: `${r.waiting_count} waiting` + (r.has_check_in_progress ? " · 1 being checked" : "") }));
   if (!rows.length) { wrap.append(el("p", { class: "empty", text: "Nobody is waiting." })); return wrap; }
   const inProgress = rows.find((q) => q.status === "in_progress");
