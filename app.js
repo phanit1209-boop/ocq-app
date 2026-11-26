@@ -407,6 +407,9 @@ function updateJoinForm(r) {
   w.classList.toggle("hidden", open);
 }
 
+function unitBig(n) {   // large, high-contrast unit number (easy to read at a glance)
+  return el("div", { class: "unit-big", "aria-label": `Unit ${n}` }, el("small", { text: "UNIT" }), el("b", { text: String(n) }));
+}
 function renderQueueBlock(r) {
   const rows = state.queues.get(r.resource_id) || [];
   const isOwner = r.is_my_resource && state.profile.role === "instructor";
@@ -438,9 +441,9 @@ function renderQueueBlock(r) {
         } }, "Take urgent first"));
     }
     const meta = [q.status === "in_progress" ? `being checked since ${timeOf(q.started_at)}` : `joined ${timeOf(q.joined_at)}`];
-    if (q.dental_unit) meta.push(`unit ${q.dental_unit}`);
     list.append(el("li", { class: "item" + (q.is_mine ? " mine" : "") + (q.status === "in_progress" ? " progress" : "") },
       el("div", { class: "pos", text: q.status === "in_progress" ? "▶" : String(q.waiting_position) }),
+      q.dental_unit ? unitBig(q.dental_unit) : null,
       el("div", { class: "main" },
         el("div", { class: "name" }, q.display_name, q.is_mine ? " (you)" : "",
           q.priority === "urgent" ? el("span", { class: "badge urgent", text: "Urgent" }) : null),
@@ -502,7 +505,21 @@ function applyTabs() {
   if (["faults", "machines", "people"].includes(state.tab) && !isAdmin() && !(state.tab === "faults" && isStaff())) state.tab = "mine";
 }
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
-const WEEK_CHOICES = [["off", "—"], ["all", "Every week"], ["1,3", "1st & 3rd"], ["2,4", "2nd & 4th"]];
+const WEEK_CHOICES = [["off", "—"], ["all", "Every week"], ["1,3", "1st & 3rd"], ["1,3,5", "1st, 3rd & 5th"], ["2,4", "2nd & 4th"]];
+const ORD = ["1st", "2nd", "3rd", "4th", "5th"];
+const weeksLabel = (v) => { const w = v.split(",").map((n) => ORD[Number(n) - 1]); return w.length > 1 ? w.slice(0, -1).join(", ") + " & " + w[w.length - 1] : w[0]; };
+function askWeeks(current) {          // tick which weeks of the month (week 5 = days 29–31)
+  return new Promise((resolve) => {
+    const d = $("weeksDialog"), now = current && current !== "off" && current !== "all" ? current.split(",") : [];
+    for (let i = 1; i <= 5; i++) $(`wk${i}`).checked = current === "all" || now.includes(String(i));
+    d.onclose = () => {
+      if (d.returnValue !== "ok") return resolve(null);
+      const w = [1, 2, 3, 4, 5].filter((i) => $(`wk${i}`).checked);
+      resolve(!w.length ? "off" : w.length === 5 ? "all" : w.join(","));
+    };
+    d.showModal();
+  });
+}
 function radioGroup(name, options, value) {
   const box = el("div", { class: "row" });
   for (const [v, label] of options) {
@@ -510,6 +527,42 @@ function radioGroup(name, options, value) {
     box.append(el("label", { class: "choice", for: `${name}_${v}` }, r, " " + label));
   }
   return box;
+}
+function scheduleGrid(schedule, prefix) {
+  const grid = el("table", { class: "sched" });
+  grid.append(el("tr", {}, el("th", { text: "" }), el("th", { text: "Morning" }), el("th", { text: "Afternoon" })));
+  const sel = {};
+  for (let d = 1; d <= 5; d++) {
+    const tr = el("tr", {}, el("th", { text: DAYS[d - 1] }));
+    for (const sess of ["AM", "PM"]) {
+      const cur = schedule.find((x) => x.weekday === d && x.session_code === sess);
+      const curVal = !cur ? "off" : !cur.weeks ? "all" : cur.weeks.join(",");
+      const s = el("select", { "aria-label": `${DAYS[d - 1]} ${sess === "AM" ? "morning" : "afternoon"}`, id: `${prefix}_${d}_${sess}` });
+      const opts = [...WEEK_CHOICES]; if (!opts.some(([v]) => v === curVal)) opts.push([curVal, weeksLabel(curVal)]);
+      for (const [v, label] of opts) s.append(el("option", { value: v, text: label }));
+      s.append(el("option", { value: "pick", text: "Pick weeks…" }));
+      s.value = curVal; s.dataset.prev = curVal;
+      s.addEventListener("change", async () => {
+        if (s.value !== "pick") { s.dataset.prev = s.value; return; }
+        const v = await askWeeks(s.dataset.prev);
+        const val = v ?? s.dataset.prev;
+        if (![...s.options].some((o) => o.value === val)) s.insertBefore(el("option", { value: val, text: weeksLabel(val) }), s.lastChild);
+        s.value = val; s.dataset.prev = val;
+      });
+      sel[`${d}_${sess}`] = s; tr.append(el("td", {}, s));
+    }
+    grid.append(tr);
+  }
+  const slots = () => {
+    const out = [];
+    for (const [key, s] of Object.entries(sel)) {
+      if (s.value === "off") continue;
+      const [d, sess] = key.split("_");
+      out.push({ weekday: Number(d), session: sess, weeks: s.value === "all" ? null : s.value.split(",").map(Number) });
+    }
+    return out;
+  };
+  return { grid, slots };
 }
 function accountForm({ setup = false, profile = null, schedule = [] }) {
   const f = el("form", { class: "account" });
@@ -524,23 +577,9 @@ function accountForm({ setup = false, profile = null, schedule = [] }) {
   const admin = el("input", { type: "checkbox", id: "acctAdmin" }); admin.checked = !!profile?.is_admin;
   f.append(el("label", { class: "choice", for: "acctAdmin" }, admin, " I am an admin"),
     el("p", { class: "hint", text: "Admins can manage scanners, printers, problem reports and other people's accounts." }));
-  const grid = el("table", { class: "sched" });
-  grid.append(el("tr", {}, el("th", { text: "" }), el("th", { text: "Morning" }), el("th", { text: "Afternoon" })));
-  const sel = {};
-  for (let d = 1; d <= 5; d++) {
-    const tr = el("tr", {}, el("th", { text: DAYS[d - 1] }));
-    for (const sess of ["AM", "PM"]) {
-      const cur = schedule.find((x) => x.weekday === d && x.session_code === sess);
-      const curVal = !cur ? "off" : !cur.weeks ? "all" : cur.weeks.join(",");
-      const s = el("select", { "aria-label": `${DAYS[d - 1]} ${sess === "AM" ? "morning" : "afternoon"}`, id: `sch_${d}_${sess}` });
-      const opts = [...WEEK_CHOICES]; if (!opts.some(([v]) => v === curVal)) opts.push([curVal, `Weeks ${curVal.replace(/,/g, " & ")}`]);
-      for (const [v, label] of opts) s.append(el("option", { value: v, text: label }));
-      s.value = curVal; sel[`${d}_${sess}`] = s; tr.append(el("td", {}, s));
-    }
-    grid.append(tr);
-  }
+  const { grid, slots: readSlots } = scheduleGrid(schedule, "sch");
   const schedBox = el("div", { id: "acctSchedBox" }, el("label", { text: "When are you in clinic? (same every week)" }), grid,
-    el("p", { class: "hint", text: "You'll be listed first during these sessions. Residents can still join you at other times." }));
+    el("p", { class: "hint", text: "Weeks count from the 1st of the month: days 1–7 are the 1st week, 8–14 the 2nd, … 29–31 the 5th. You'll be listed first during these sessions; residents can still join you at other times." }));
   f.append(schedBox);
   const sync = () => {
     const r = f.querySelector("input[name=acctRole]:checked")?.value;
@@ -552,12 +591,7 @@ function accountForm({ setup = false, profile = null, schedule = [] }) {
   const read = () => {
     const r = f.querySelector("input[name=acctRole]:checked")?.value || null;
     const k = r === "instructor" ? (f.querySelector("input[name=acctKind]:checked")?.value || null) : null;
-    const slots = [];
-    for (const [key, s] of Object.entries(sel)) {
-      if (s.value === "off") continue;
-      const [d, sess] = key.split("_");
-      slots.push({ weekday: Number(d), session: sess, weeks: s.value === "all" ? null : s.value.split(",").map(Number) });
-    }
+    const slots = readSlots();
     return { name: name.value.replace(/\s+/g, " ").trim(), role: r, kind: k, isAdmin: admin.checked, slots };
   };
   return { form: f, read };
@@ -584,14 +618,17 @@ function renderSetup() {
   box.append(form);
 }
 async function openSettings() {
-  state.tab = "settings"; state.viewing = null; state.viewingMachine = null; state.schedule = null;
+  state.tab = "settings"; state.viewing = null; state.viewingMachine = null; state.schedule = null; settingsCard = null;
   syncChannels(); render();
   try { state.schedule = state.profile.role === "instructor" ? ((await rpc("get_my_schedule")) || []) : []; render(); }
   catch (e) { banner(friendly(e), "error"); }
 }
+let settingsCard = null;   // built once per visit so a background refresh never wipes unsaved choices
 function renderSettings() {
-  const box = $("settingsTab"); box.replaceChildren();
-  if (state.schedule === null) { box.append(el("p", { class: "empty", text: "Loading…" })); return; }
+  const box = $("settingsTab");
+  if (state.schedule === null) { settingsCard = null; box.replaceChildren(el("p", { class: "empty", text: "Loading…" })); return; }
+  if (settingsCard && box.contains(settingsCard)) return;
+  box.replaceChildren();
   const { form, read } = accountForm({ profile: state.profile, schedule: state.schedule });
   const save = el("button", { class: "primary", type: "submit", id: "settingsSave", disabled: state.busy }, "Save");
   form.append(el("div", { class: "row end" }, save));
@@ -604,10 +641,11 @@ function renderSettings() {
       if (v.role === "instructor" && v.kind === "internal") await rpc("set_my_schedule", { p_slots: v.slots });
       state.profile = ((await rpc("get_my_profile")) || [])[0] || state.profile;
       state.schedule = v.role === "instructor" ? ((await rpc("get_my_schedule")) || []) : [];
-      applyTabs();
+      settingsCard = null; applyTabs();
     }, "Settings saved.");
   });
-  box.append(el("div", { class: "card" }, el("h2", { text: "Settings" }), form));
+  settingsCard = el("div", { class: "card" }, el("h2", { text: "Settings" }), form);
+  box.append(settingsCard);
 }
 function describeChange(c) {
   if (!c) return "";
@@ -617,7 +655,10 @@ function describeChange(c) {
   return "";
 }
 function renderPeople() {
-  const box = $("peopleTab"); box.replaceChildren();
+  const box = $("peopleTab");
+  const open = box.querySelector("li.editor");
+  if (open && open.dataset.uid === state.editingPerson) return;   // don't wipe an edit in progress on background refresh
+  box.replaceChildren();
   box.append(el("p", { class: "hint", text: "Newest changes first. Anyone can change their own role or admin setting; you can change it back here." }));
   const ul = el("ul", { class: "list" });
   for (const u of state.people) {
@@ -630,28 +671,43 @@ function renderPeople() {
           u.is_admin ? el("span", { class: "badge warn", text: "admin" }) : null,
           u.active ? null : el("span", { class: "badge oos", text: "disabled" })),
         el("div", { class: "meta", text: meta })),
-      el("button", { class: "ghost small", type: "button", onclick: () => { state.editingPerson = editing ? null : u.user_id; render(); } }, editing ? "Close" : "Change"));
+      el("button", { class: "ghost small", type: "button", onclick: () => { state.editingPerson = editing ? null : u.user_id; $("peopleTab").replaceChildren(); render(); } }, editing ? "Close" : "Change"));
     ul.append(li);
     if (editing) ul.append(personEditor(u));
   }
   box.append(ul);
 }
 function personEditor(u) {
-  const role = el("select", { "aria-label": "Role" }, ...[["resident", "Resident"], ["instructor:internal", "Instructor (internal)"], ["instructor:external", "Instructor (external)"]]
+  const box = el("li", { class: "card editor", "data-uid": u.user_id });
+  const name = el("input", { type: "text", maxlength: "40", id: "pName", value: u.display_name }); name.value = u.display_name;
+  const role = el("select", { "aria-label": "Role", id: "pRole" }, ...[["resident", "Resident"], ["instructor:internal", "Instructor (internal)"], ["instructor:external", "Instructor (external)"]]
     .map(([v, t]) => el("option", { value: v, text: t })));
   role.value = u.role === "instructor" ? `instructor:${u.instructor_kind || "internal"}` : "resident";
   const adm = el("input", { type: "checkbox", id: "pAdmin" }); adm.checked = !!u.is_admin;
   const act_ = el("input", { type: "checkbox", id: "pActive" }); act_.checked = !!u.active;
-  return el("li", { class: "card editor" }, role,
+  const schedWrap = el("div", { id: "pSchedBox" }, el("p", { class: "hint", text: "Loading schedule…" }));
+  let readSlots = null;
+  const syncSched = () => schedWrap.classList.toggle("hidden", role.value !== "instructor:internal");
+  role.addEventListener("change", syncSched); syncSched();
+  (u.role === "instructor" ? rpc("admin_get_schedule", { p_user_id: u.user_id }) : Promise.resolve([])).then((sch) => {
+    const g = scheduleGrid(sch || [], "psch"); readSlots = g.slots;
+    schedWrap.replaceChildren(el("label", { text: "Weekly clinic sessions" }), g.grid);
+  }).catch((e) => banner(friendly(e), "error"));
+  box.append(el("label", { for: "pName", text: "Name" }), name, el("label", { for: "pRole", text: "Role" }), role,
     el("label", { class: "choice", for: "pAdmin" }, adm, " Admin"),
-    el("label", { class: "choice", for: "pActive" }, act_, " Account enabled"),
+    el("label", { class: "choice", for: "pActive" }, act_, " Account enabled"), schedWrap,
     el("div", { class: "row end" }, el("button", { class: "primary", type: "button", disabled: state.busy, onclick: () => {
       const [r, k] = role.value.split(":");
+      const nm = name.value.replace(/\s+/g, " ").trim();
+      if (!nm || nm.length > 40 || /[<>]/.test(nm)) { banner(MESSAGES.invalid_display_name, "error"); return; }
       act(async () => {
+        if (nm !== u.display_name) await rpc("admin_set_display_name", { p_user_id: u.user_id, p_display_name: nm });
         await rpc("admin_update_user", { p_user_id: u.user_id, p_role: r, p_instructor_kind: k || null, p_is_admin: adm.checked, p_active: act_.checked });
-        state.editingPerson = null; await loadPeople();
-      }, `Saved ${u.display_name}.`);
+        if (r === "instructor" && k === "internal" && readSlots) await rpc("admin_set_schedule", { p_user_id: u.user_id, p_slots: readSlots() });
+        state.editingPerson = null; $("peopleTab").replaceChildren(); await loadPeople();
+      }, `Saved ${nm}.`);
     } }, "Save")));
+  return box;
 }
 
 // ---------- privacy notice ----------
@@ -883,11 +939,11 @@ function renderMachineView(id) {
   else {
     const list = el("ul", { class: "list" });
     for (const q of rows) {
-      const unit = !isPrinter(m) && q.dental_unit ? `unit ${q.dental_unit} · ` : "";
-      const meta = unit + (q.status === "in_progress" ? (isPrinter(m) ? `printing · ready about ${timeOf(q.expected_end_at)}` : `scanning since ${timeOf(q.started_at)}`)
+      const meta = (q.status === "in_progress" ? (isPrinter(m) ? `printing · ready about ${timeOf(q.expected_end_at)}` : `scanning since ${timeOf(q.started_at)}`)
         : `joined ${timeOf(q.joined_at)}`);
       list.append(el("li", { class: "item" + (q.is_mine ? " mine" : "") + (q.status === "in_progress" ? " progress" : "") },
         el("div", { class: "pos", text: q.status === "in_progress" ? "▶" : String(q.waiting_position) }),
+        !isPrinter(m) && q.dental_unit ? unitBig(q.dental_unit) : null,
         el("div", { class: "main" },
           el("div", { class: "name" }, q.display_name, q.is_mine ? " (you)" : "",
             q.status === "waiting" && q.ready ? el("span", { class: "badge ready", text: "Ready" }) : null,

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
   <title>Ortho Clinic Queue</title>
-  <link rel="stylesheet" href="styles.css?v=202611260911">
+  <link rel="stylesheet" href="styles.css?v=202611260924">
 </head>
 <body>
   <header class="topbar">
@@ -105,6 +105,21 @@
     </form>
   </dialog>
 
+  <dialog id="weeksDialog">
+    <form method="dialog">
+      <h1>Which weeks of the month?</h1>
+      <p class="hint">1st week = days 1–7, 2nd = 8–14, 3rd = 15–21, 4th = 22–28, 5th = 29–31.</p>
+      <label class="choice"><input type="checkbox" id="wk1"> 1st week</label>
+      <label class="choice"><input type="checkbox" id="wk2"> 2nd week</label>
+      <label class="choice"><input type="checkbox" id="wk3"> 3rd week</label>
+      <label class="choice"><input type="checkbox" id="wk4"> 4th week</label>
+      <label class="choice"><input type="checkbox" id="wk5"> 5th week (if the month has one)</label>
+      <div class="row end" style="margin-top:14px">
+        <button value="cancel" class="ghost" type="submit" formnovalidate>Cancel</button>
+        <button value="ok" class="primary" id="weeksOk" type="submit">OK</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="statusDialog">
     <form method="dialog">
       <h1 id="statusTitle">Status today</h1>
@@ -214,7 +229,7 @@
 
   <footer class="footer"><button type="button" class="linkish" id="privacyLink">Privacy notice</button></footer>
 
-  <script src="config.js?v=202611260911"></script>
-  <script type="module" src="app.js?v=202611260911"></script>
+  <script src="config.js?v=202611260924"></script>
+  <script type="module" src="app.js?v=202611260924"></script>
 </body>
 </html>
