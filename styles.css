@@ -236,3 +236,5 @@ details.range-add { margin-top: 10px; } details.range-add summary { cursor: poin
 .import-table .imp-name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .import-table select, .import-table input { padding: 10px 8px; font-size: 14px; border-radius: 12px; }
 .import-table tr.group td { font-size: 12px; font-weight: 600; color: var(--slate); padding-top: 6px; }
+#calView button { padding: 8px 4px; font-size: 14px; }
+.months { display: flex; flex-direction: column; gap: 10px; }

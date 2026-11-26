@@ -869,6 +869,8 @@ function clinicRange() {
   const t = clinicCal.anchor;
   if (clinicCal.view === "day") return [t, t];
   if (clinicCal.view === "week") { const m = mondayOf(t); return [m, addDays(m, 4)]; }
+  if (clinicCal.view === "2week") { const m = mondayOf(t); return [m, addDays(m, 11)]; }
+  if (clinicCal.view === "2month") return [monthRange(+t.slice(0, 4), +t.slice(5, 7) - 1)[0], monthRange(+t.slice(0, 4), +t.slice(5, 7))[1]];
   return monthRange(+t.slice(0, 4), +t.slice(5, 7) - 1);
 }
 async function loadClinicCalendar(force = false) {
@@ -884,14 +886,18 @@ function clinicGo(fn) { fn(); render(); loadClinicCalendar(true).then(render).ca
 function clinicStep(n) {
   clinicGo(() => {
     const t = clinicCal.anchor;
-    if (clinicCal.view === "month") clinicCal.anchor = isoOf(+t.slice(0, 4), +t.slice(5, 7) - 1 + n, 1);
-    else if (clinicCal.view === "week") clinicCal.anchor = addDays(mondayOf(t), 7 * n);
+    if (clinicCal.view === "month" || clinicCal.view === "2month") clinicCal.anchor = isoOf(+t.slice(0, 4), +t.slice(5, 7) - 1 + n * (clinicCal.view === "2month" ? 2 : 1), 1);
+    else if (clinicCal.view === "week" || clinicCal.view === "2week") clinicCal.anchor = addDays(mondayOf(t), 7 * n * (clinicCal.view === "2week" ? 2 : 1));
     else { let d = addDays(t, n); while ([0, 6].includes(weekdayOf(d))) d = addDays(d, n); clinicCal.anchor = d; }
   });
 }
 function clinicTitle() {
   const [a, b] = clinicRange();
   if (clinicCal.view === "month") return monthTitle(+a.slice(0, 4), +a.slice(5, 7) - 1);
+  if (clinicCal.view === "2month") {
+    const mt = (iso, y) => new Date(iso + "T00:00:00Z").toLocaleDateString("en-GB", { timeZone: "UTC", month: "short", ...(y ? { year: "numeric" } : {}) });
+    return `${mt(a, a.slice(0, 4) !== b.slice(0, 4))} – ${mt(b, true)}`;
+  }
   if (clinicCal.view === "day") return fmtDay(a);
   const f = (iso, o) => new Date(iso + "T00:00:00Z").toLocaleDateString("en-GB", { timeZone: "UTC", ...o });
   return `${f(a, { day: "numeric", month: a.slice(5, 7) === b.slice(5, 7) ? undefined : "short" })} – ${f(b, { day: "numeric", month: "short", year: "numeric" })}`;
@@ -917,7 +923,7 @@ function renderCalendar() {
   const one = clinicCal.who !== "all";
   // controls: Day / Week / Month · instructor picker · Internal / External
   const views = el("div", { class: "seg", role: "group", "aria-label": "Calendar view", id: "calView" },
-    ...[["day", "Day"], ["week", "Week"], ["month", "Month"]].map(([k, t]) => el("button", { type: "button", "aria-pressed": String(clinicCal.view === k),
+    ...[["day", "Day"], ["week", "Week"], ["2week", "2 wks"], ["month", "Month"], ["2month", "2 mo"]].map(([k, t]) => el("button", { "data-view": k, type: "button", "aria-pressed": String(clinicCal.view === k),
       onclick: () => clinicGo(() => { clinicCal.view = k; if (k === "day" && [0, 6].includes(weekdayOf(clinicCal.anchor))) clinicCal.anchor = mondayOf(clinicCal.anchor); }) }, t)));
   const insts = state.overview.filter((r) => state.instFilter === "all" || (r.instructor_kind || "internal") === state.instFilter)
     .slice().sort((x, y) => x.resource_name.localeCompare(y.resource_name));
@@ -933,11 +939,12 @@ function renderCalendar() {
     el("button", { class: "ghost small", type: "button", "aria-label": "Previous", onclick: () => clinicStep(-1) }, "‹"),
     el("h3", { id: "calTitle", text: clinicTitle() }),
     el("button", { class: "ghost small", type: "button", "aria-label": "Next", onclick: () => clinicStep(1) }, "›"));
-  const rows = clinicCal.rows.filter(calFilter), per = peopleByDay(rows), now = bkkToday();
+  // all instructors: show only who is in (off sessions are left out so the calendar stays clear); one instructor: show their ✗ too
+  const rows = clinicCal.rows.filter(calFilter).filter((r) => one || r.state !== "off"), per = peopleByDay(rows), now = bkkToday();
   let body;
-  if (clinicCal.view === "month") {
-    const [a] = clinicRange(), cal = { y: +a.slice(0, 4), m: +a.slice(5, 7) - 1 };
-    body = calGrid(cal, (iso) => {
+  if (clinicCal.view === "month" || clinicCal.view === "2month") {
+    const [a] = clinicRange(), y0 = +a.slice(0, 4), m0 = +a.slice(5, 7) - 1;
+    const cellFor = (iso) => {
       const hol = clinicCal.hol.get(iso), people = per.get(iso) || [];
       const say = (p) => `${p.name}: morning ${sessWord(p.AM)}, afternoon ${sessWord(p.PM)}`;
       return el("button", { class: "cal-day wide" + (iso === now ? " today" : "") + (hol ? " holiday" : ""), type: "button", "data-day": iso,
@@ -949,17 +956,24 @@ function renderCalendar() {
           el("span", { class: "halves" + (one ? "" : " mini") }, ...["AM", "PM"].map((k) => el("span", { class: "half " + (p[k]?.state || "none"), text: halfLabel(p[k]) })))),
           one && people[0] && (people[0].AM?.state === "limited" || people[0].PM?.state === "limited")
             ? el("span", { class: "tnote", text: (people[0].AM?.state === "limited" ? people[0].AM : people[0].PM).time_note }) : null));
-    });
+    };
+    const months = clinicCal.view === "2month" ? [0, 1] : [0];
+    body = el("div", { class: "months" }, ...months.map((k) => {
+      const d = new Date(Date.UTC(y0, m0 + k, 1)), cal = { y: d.getUTCFullYear(), m: d.getUTCMonth() };
+      return el("div", { class: "month-block" }, months.length > 1 ? el("div", { class: "section-title", text: monthTitle(cal.y, cal.m) }) : null, calGrid(cal, cellFor));
+    }));
   } else {
     const [a, b] = clinicRange(), days = [];
     for (let d = a; d <= b; d = addDays(d, 1)) if (![0, 6].includes(weekdayOf(d))) days.push(d);
-    body = el("div", { class: "day-list", id: "calDays" }, ...days.map((iso) => dayBlock(iso, per.get(iso) || [], clinicCal.view === "week")));
+    body = el("div", { class: "day-list", id: "calDays" }, ...days.flatMap((iso, i) => [
+      clinicCal.view === "2week" && i === 5 ? el("div", { class: "section-title", text: "Next week" }) : null,
+      dayBlock(iso, per.get(iso) || [], clinicCal.view !== "day")].filter(Boolean)));
   }
   box.append(el("div", { class: "card" }, el("h2", { text: "Clinic calendar" }), views, pick, one ? null : seg, nav,
     calLegend(), body,
-    el("p", { class: "hint", text: clinicCal.view === "month"
-      ? (one ? "Left box = morning, right box = afternoon. Tap a date for details." : "Each name: left box = morning, right box = afternoon. Tap a date to see that day.")
-      : "✓ in clinic · ½ part of the session (times shown) · ✗ off." })));
+    el("p", { class: "hint", text: clinicCal.view === "month" || clinicCal.view === "2month"
+      ? (one ? "Left box = morning, right box = afternoon. Tap a date for details." : "Only instructors who are in are listed. Each name: left box = morning, right box = afternoon. Tap a date to see that day.")
+      : one ? "✓ in clinic · ½ part of the session (times shown) · ✗ off." : "Only instructors who are in are listed. ✓ in clinic · ½ part of the session (times shown)." })));
   if (isAdmin()) box.append(summaryCard(keepSummary), importCard(), holidaysCard());
 }
 function dayBlock(iso, people, tappable) {
@@ -1237,7 +1251,7 @@ async function loadHolidayAdmin() {
 }
 function holidaysCard() {
   const card = el("div", { class: "card", id: "calHolidays" }, el("h2", { text: "Holidays" }),
-    el("p", { class: "hint", text: "No usual clinic on these days (instructors can still add an extra day). Thai public holidays are added automatically on the 1st of each month from the official holiday calendar; removing one keeps it removed." }));
+    el("p", { class: "hint", text: "No usual clinic on these days (instructors can still add an extra day). Thai public holidays (including newly announced special days) are added automatically every week from the official holiday calendar; removing one keeps it removed." }));
   if (!holState.list) {
     card.append(el("p", { class: "empty", text: "Loading…" }));
     loadHolidayAdmin().then(render).catch((e) => banner(friendly(e), "error"));
@@ -1246,7 +1260,7 @@ function holidaysCard() {
   const st = holState.status || {};
   card.append(el("p", { class: "meta", id: "holSyncStatus", text: st.pending ? "Checking the online holiday calendar…" :
     st.last_run_at ? `Last automatic check: ${new Date(st.last_run_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "Asia/Bangkok" })}` +
-      (st.last_error ? " (couldn't reach it, will retry next month)" : ` · ${st.last_added || 0} added`) : "Not checked yet." }));
+      (st.last_error ? " (couldn't reach it, will retry next week)" : ` · ${st.last_added || 0} added`) : "Not checked yet." }));
   card.append(el("ul", { class: "list compact", id: "holList" }, ...(holState.list.length ? holState.list.map((h) => el("li", { class: "item" },
     el("div", { class: "main" }, el("div", { class: "name", text: fmtDay(h.day) + " " + h.day.slice(0, 4) }),
       el("div", { class: "meta", text: h.name + (h.source === "thai" ? " · Thai public holiday" : "") })),
