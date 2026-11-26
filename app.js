@@ -892,7 +892,7 @@ function daysOffSection(userId, prefix) {
     } catch (e) { banner(friendly(e), "error"); }
   };
   calendar = instructorCalendar(userId, prefix, loadList);
-  wrap.append(prefix === "set" ? null : el("label", { text: "Clinic calendar" }), calendar.node,
+  wrap.append(...(prefix === "set" ? [] : [el("label", { text: "Clinic calendar" })]), calendar.node,
     el("div", { class: "section-title", text: "Planned changes" }), list,
     el("details", { class: "range-add" }, el("summary", { text: "Add several days off at once" }),
       el("div", { class: "row" }, el("label", { for: `${prefix}OffFrom`, text: "From" }), from, el("label", { for: `${prefix}OffTo`, text: "To" }), to),
