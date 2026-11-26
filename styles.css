@@ -260,3 +260,5 @@ details.fold[open] > summary::after { transform: rotate(90deg); }
 .fold-hint { font-size: 13px; color: var(--muted); }
 details.fold > .card { margin: 0; border: 0; box-shadow: none; }
 details.fold > .card > h2:first-child { display: none; }
+.mycal-top { margin-bottom: 8px; }
+.mycal-top select { font-weight: 600; }

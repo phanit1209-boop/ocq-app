@@ -188,7 +188,7 @@ async function refreshAll() {
     await Promise.all([...instructorIds().map(loadQueue), ...machineIds().map(loadMachineQueue),
       state.viewingMachine ? loadMachineFaults(state.viewingMachine) : null,
       state.tab === "faults" ? loadBoard() : null, state.tab === "machines" ? loadAdminMachines() : null,
-      state.tab === "people" ? loadPeople() : null, state.tab === "calendar" ? loadClinicCalendar() : null]);
+      state.tab === "people" ? loadPeople() : null, (state.tab === "calendar" || (state.tab === "mycal" && state.myCalWho !== "me")) ? loadClinicCalendar() : null]);
     syncChannels();
     render();
   } catch (e) { banner(friendly(e), "error"); }
@@ -684,10 +684,31 @@ async function openSettings() {
 }
 // "My calendar" tab (instructors): built once per visit so a background refresh never resets the month shown
 let myCalCard = null;
+state.myCalWho = "me";      // "me" (default, editable) · "all" · an instructor's resource id
+function myCalPicker() {
+  const insts = state.overview.slice().sort((x, y) => ((x.instructor_kind || "internal") === "external") - ((y.instructor_kind || "internal") === "external") || x.resource_name.localeCompare(y.resource_name));
+  const sel = el("select", { id: "myCalWho", "aria-label": "Whose calendar" },
+    el("option", { value: "me", text: "My calendar" }), el("option", { value: "all", text: "All instructors" }),
+    ...insts.filter((r) => !r.is_my_resource).map((r) => el("option", { value: r.resource_id, text: r.resource_name + (r.instructor_kind === "external" ? " (ext)" : "") })));
+  sel.value = state.myCalWho;
+  sel.addEventListener("change", () => {
+    state.myCalWho = sel.value;
+    if (sel.value === "me") { myCalCard = null; render(); return; }
+    clinicCal.who = sel.value;
+    render(); loadClinicCalendar(true).then(render).catch((e) => banner(friendly(e), "error"));
+  });
+  return el("div", { class: "mycal-top" }, sel);
+}
 function renderMyCal() {
   const box = $("mycalTab");
+  if (state.myCalWho !== "me") {
+    clinicCal.who = state.myCalWho;
+    if (clinicCal.anchor === null) loadClinicCalendar(true).then(render).catch((e) => banner(friendly(e), "error"));
+    renderCalendar(box, { top: myCalPicker() });
+    return;
+  }
   if (myCalCard && box.contains(myCalCard)) return;
-  myCalCard = el("div", { class: "card", id: "myCalCard" }, el("h2", { text: "My calendar" }), daysOffSection(null, "set"));
+  myCalCard = el("div", { class: "card", id: "myCalCard" }, myCalPicker(), daysOffSection(null, "set"));
   box.replaceChildren(myCalCard);
 }
 let settingsCard = null;   // built once per visit so a background refresh never wipes unsaved choices
@@ -871,7 +892,7 @@ function daysOffSection(userId, prefix) {
     } catch (e) { banner(friendly(e), "error"); }
   };
   calendar = instructorCalendar(userId, prefix, loadList);
-  wrap.append(el("label", { text: "Clinic calendar" }), calendar.node,
+  wrap.append(prefix === "set" ? null : el("label", { text: "Clinic calendar" }), calendar.node,
     el("div", { class: "section-title", text: "Planned changes" }), list,
     el("details", { class: "range-add" }, el("summary", { text: "Add several days off at once" }),
       el("div", { class: "row" }, el("label", { for: `${prefix}OffFrom`, text: "From" }), from, el("label", { for: `${prefix}OffTo`, text: "To" }), to),
@@ -943,14 +964,16 @@ function peopleByDay(rows) {        // iso -> [{ name, kind, AM, PM }] sorted by
   return out;
 }
 const sessWord = (h) => !h ? "–" : h.state === "off" ? "Off" : h.state === "limited" ? h.time_note : "In";
-function renderCalendar() {
-  const box = $("calendarTab");
+// target: the Calendar tab, or the instructor's "My calendar" tab when they look at other instructors (no admin tools there)
+function renderCalendar(box = $("calendarTab"), opts = {}) {
+  const other = box.id === "calendarTab" ? $("mycalTab") : $("calendarTab");
+  if (other.querySelector("#calView")) other.querySelector("#calView").closest(".card")?.remove();   // one calendar in the page at a time
   // don't rebuild under someone who is typing in an admin form (background refresh)
   const ae = document.activeElement;
-  if (ae && box.contains(ae) && ["INPUT", "SELECT", "TEXTAREA"].includes(ae.tagName) && ae.id !== "calWho") return;
+  if (ae && box.contains(ae) && ["INPUT", "SELECT", "TEXTAREA"].includes(ae.tagName) && ae.id !== "calWho" && ae.id !== "myCalWho") return;
   const keepSummary = box.querySelector("#calSummaryText");
   box.replaceChildren();
-  if (clinicCal.anchor === null) { box.append(el("p", { class: "empty", text: "Loading…" })); return; }
+  if (clinicCal.anchor === null) { box.append(el("div", { class: "card" }, opts.top || null, el("p", { class: "empty", text: "Loading…" }))); return; }
   const one = clinicCal.who !== "all";
   // controls: Day / Week / Month · instructor picker · Internal / External
   const viewBtn = ([k, t]) => el("button", { "data-view": k, type: "button", "aria-pressed": String(clinicCal.view === k),
@@ -1006,12 +1029,12 @@ function renderCalendar() {
       clinicCal.view === "2week" && i === 5 ? el("div", { class: "section-title", text: "Next week" }) : null,
       dayBlock(iso, per.get(iso) || [], clinicCal.view !== "day", evsFor(iso))].filter(Boolean)));
   }
-  box.append(el("div", { class: "card" }, el("h2", { text: "Clinic calendar" }), views, pick, one ? null : seg, nav,
+  box.append(el("div", { class: "card" }, opts.top || el("h2", { text: "Clinic calendar" }), views, opts.top ? null : pick, one ? null : seg, nav,
     calLegend(), body,
     el("p", { class: "hint", text: clinicCal.view === "month" || clinicCal.view === "2month"
       ? (one ? "Left box = morning, right box = afternoon. Tap a date for details." : "Only instructors who are in are listed. Each name: left box = morning, right box = afternoon. Tap a date to see that day.")
       : one ? "✓ in clinic · ½ part of the session (times shown) · ✗ off." : "Only instructors who are in are listed. ✓ in clinic · ½ part of the session (times shown)." })));
-  if (isAdmin()) box.append(el("div", { class: "admin-tools" }, el("div", { class: "section-title", text: "Admin tools" }),
+  if (isAdmin() && !opts.top) box.append(el("div", { class: "admin-tools" }, el("div", { class: "section-title", text: "Admin tools" }),
     adminFold("summary", "Summary message", "Copy or send this and next month in LINE", () => summaryCard(keepSummary)),
     adminFold("events", "Conferences & events", "Who is away for a conference or meeting", eventsCard),
     adminFold("import", "Update instructors' days", "Change many days at once, or paste a message", importCard),
