@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
   <title>Ortho Clinic Queue</title>
-  <link rel="stylesheet" href="styles.css?v=202611260840">
+  <link rel="stylesheet" href="styles.css?v=202611260855">
 </head>
 <body>
   <header class="topbar">
@@ -21,13 +21,14 @@
   <main id="app">
     <section id="signInView" class="card hidden">
       <h1>Sign in</h1>
-      <p>Use your LINE account. Only people on the clinic roster can use this app.</p>
+      <p>Use your LINE account.</p>
       <button id="lineLoginBtn" class="primary line" type="button">Sign in with LINE</button>
     </section>
 
-    <section id="notRosteredView" class="card hidden">
-      <h1>Account not on the roster</h1>
-      <p>Your LINE sign-in worked, but this account is not on the clinic roster. Please ask the clinic administrator to add you.</p>
+    <section id="setupView" class="card hidden">
+      <h1>Welcome</h1>
+      <p class="hint">Set up your account. You can change all of this later in Settings.</p>
+      <div id="setupBox"></div>
     </section>
 
     <section id="mainView" class="hidden">
@@ -41,6 +42,7 @@
         <button type="button" role="tab" data-tab="printers" id="tabPrinters" class="hidden">Printers</button>
         <button type="button" role="tab" data-tab="faults" id="tabFaults" class="hidden">Faults</button>
         <button type="button" role="tab" data-tab="machines" id="tabMachines" class="hidden">Machines</button>
+        <button type="button" role="tab" data-tab="people" id="tabPeople" class="hidden">People</button>
       </nav>
 
       <section id="mineTab"></section>
@@ -51,6 +53,8 @@
       <section id="machineTab" class="hidden"></section>
       <section id="faultsTab" class="hidden"></section>
       <section id="machinesTab" class="hidden"></section>
+      <section id="peopleTab" class="hidden"></section>
+      <section id="settingsTab" class="hidden"></section>
     </section>
   </main>
 
@@ -194,7 +198,7 @@
 
   <footer class="footer"><button type="button" class="linkish" id="privacyLink">Privacy notice</button></footer>
 
-  <script src="config.js?v=202611260840"></script>
-  <script type="module" src="app.js?v=202611260840"></script>
+  <script src="config.js?v=202611260855"></script>
+  <script type="module" src="app.js?v=202611260855"></script>
 </body>
 </html>

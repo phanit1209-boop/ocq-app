@@ -11,12 +11,24 @@ const sb = createClient(C.supabaseUrl, C.publishableKey, {
 const $ = (id) => document.getElementById(id);
 const PENDING_KEY = "ocq-v5-pending-join";
 const state = { profile: null, overview: [], session: null, tab: "mine", viewing: null, queues: new Map(), channels: new Map(), busy: false,
-  machines: [], mqueues: new Map(), mfaults: new Map(), viewingMachine: null, board: null, adminMachines: [] };
+  machines: [], mqueues: new Map(), mfaults: new Map(), viewingMachine: null, board: null, adminMachines: [],
+  instFilter: "all", people: [], editingPerson: null, schedule: null };
 const scannersOn = () => !!C.features?.scanners;
 const printersOn = () => !!C.features?.printers;
-const isStaff = () => ["technician", "admin"].includes(state.profile?.role);
+const isAdmin = () => !!state.profile && (state.profile.is_admin === true || state.profile.role === "admin");
+const isStaff = () => isAdmin() || state.profile?.role === "technician";
 
 const MESSAGES = {
+  invalid_role: "Choose Resident or Instructor.",
+  invalid_instructor_kind: "Choose Internal or External.",
+  instructor_queue_not_empty: "Your queue still has people in it. Finish or wait for it to empty first.",
+  leave_queues_first: "Leave the instructor queues you are waiting in first.",
+  last_admin: "You are the only admin. Make someone else admin first.",
+  cannot_disable_self: "You can't disable your own account.",
+  account_disabled: "This account has been disabled by an admin.",
+  already_set_up: "This account is already set up. Reload the page.",
+  invalid_schedule: "That clinic schedule isn't valid.",
+  user_not_found: "That account no longer exists.",
   clinic_closed: "Registration is closed now (outside clinic session hours).",
   already_in_queue: "You are already waiting in this instructor's queue.",
   invalid_dental_unit: "Dental unit must be a number from 1 to 999.",
@@ -107,7 +119,7 @@ function askConfirm(text) {
   });
 }
 function show(view) {
-  for (const id of ["signInView", "notRosteredView", "mainView"]) $(id).classList.toggle("hidden", id !== view);
+  for (const id of ["signInView", "setupView", "mainView"]) $(id).classList.toggle("hidden", id !== view);
   $("signOutBtn").classList.toggle("hidden", view === "signInView");
 }
 
@@ -133,7 +145,8 @@ const kindWord = (m) => (isPrinter(m) ? "printer" : "scanner");
 async function loadMachineQueue(id) { state.mqueues.set(id, (await rpc("get_machine_queue", { p_resource_id: id })) || []); }
 async function loadMachineFaults(id) { state.mfaults.set(id, (await rpc("get_machine_faults", { p_resource_id: id })) || []); }
 async function loadBoard() { state.board = isStaff() ? await rpc("get_fault_board") : null; }
-async function loadAdminMachines() { state.adminMachines = state.profile?.role === "admin" ? ((await rpc("admin_list_machines")) || []) : []; }
+async function loadAdminMachines() { state.adminMachines = isAdmin() ? ((await rpc("admin_list_machines")) || []) : []; }
+async function loadPeople() { state.people = isAdmin() ? ((await rpc("admin_list_users")) || []) : []; }
 const isMachine = (id) => state.machines.some((m) => m.resource_id === id);
 
 function relevantResources() {
@@ -158,7 +171,8 @@ async function refreshAll() {
     await Promise.all([loadOverview(), loadSession(), loadMachines()]);
     await Promise.all([...instructorIds().map(loadQueue), ...machineIds().map(loadMachineQueue),
       state.viewingMachine ? loadMachineFaults(state.viewingMachine) : null,
-      state.tab === "faults" ? loadBoard() : null, state.tab === "machines" ? loadAdminMachines() : null]);
+      state.tab === "faults" ? loadBoard() : null, state.tab === "machines" ? loadAdminMachines() : null,
+      state.tab === "people" ? loadPeople() : null]);
     syncChannels();
     render();
   } catch (e) { banner(friendly(e), "error"); }
@@ -235,15 +249,18 @@ function render() {
   const p = state.profile;
   if (!p) return;
   $("whoLine").replaceChildren(el("span", { text: p.display_name }),
-    el("button", { class: "edit", type: "button", onclick: editName }, "Edit name"));
-  const roleLabel = { resident: "Resident", instructor: "Instructor", admin: "Admin", technician: "Technician" }[p.role] || p.role;
+    el("button", { class: "edit", type: "button", onclick: editName }, "Edit name"),
+    el("button", { class: "edit", type: "button", onclick: openSettings }, "Settings"));
+  const roleLabel = ({ resident: "Resident", instructor: p.instructor_kind === "external" ? "External instructor" : "Instructor",
+    admin: "Admin", technician: "Technician" }[p.role] || p.role) + (p.is_admin && p.role !== "admin" ? " · Admin" : "");
   $("sessionLine").textContent = `${roleLabel} · ` + (state.session
     ? `Registration open until ${String(state.session.end_time).slice(0, 5)}`
     : "Registration closed (08:45–12:00 · 12:45–16:00)");
   for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b.dataset.tab === state.tab && !state.viewing));
   const viewingAny = !!state.viewing || !!state.viewingMachine;
   for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b.dataset.tab === state.tab && !viewingAny));
-  const panes = { mine: "mineTab", all: "allTab", scanners: "scannersTab", printers: "printersTab", faults: "faultsTab", machines: "machinesTab" };
+  const panes = { mine: "mineTab", all: "allTab", scanners: "scannersTab", printers: "printersTab", faults: "faultsTab", machines: "machinesTab",
+    people: "peopleTab", settings: "settingsTab" };
   for (const [tab, id] of Object.entries(panes)) $(id).classList.toggle("hidden", state.tab !== tab || viewingAny);
   $("queueTab").classList.toggle("hidden", !state.viewing);
   $("machineTab").classList.toggle("hidden", !state.viewingMachine);
@@ -254,6 +271,8 @@ function render() {
   else if (state.tab === "printers") renderMachineList("printer");
   else if (state.tab === "faults") renderFaults();
   else if (state.tab === "machines") renderAdminMachines();
+  else if (state.tab === "people") renderPeople();
+  else if (state.tab === "settings") renderSettings();
   else renderAll();
 }
 
@@ -300,21 +319,32 @@ function renderMineInner(box) {
 
 function renderAll() {
   const box = $("allTab"); box.replaceChildren();
-  if (!state.overview.length) { box.append(el("p", { class: "empty", text: "No instructors are available." })); return; }
+  const seg = el("div", { class: "seg", role: "group", "aria-label": "Show instructors" });
+  for (const [k, label] of [["all", "All"], ["internal", "Internal"], ["external", "External"]])
+    seg.append(el("button", { type: "button", "aria-pressed": String(state.instFilter === k), onclick: () => { state.instFilter = k; render(); } }, label));
+  box.append(seg);
+  const shown = state.overview.filter((r) => state.instFilter === "all" || (r.instructor_kind || "internal") === state.instFilter);
+  if (!shown.length) { box.append(el("p", { class: "empty", text: state.overview.length ? "No instructors in this group." : "No instructors are available." })); return; }
+  const onDuty = shown.filter((r) => r.on_duty), others = shown.filter((r) => !r.on_duty);
+  if (onDuty.length) { box.append(el("div", { class: "section-title", text: "In clinic this session" })); box.append(instructorList(onDuty)); }
+  if (others.length) { if (onDuty.length) box.append(el("div", { class: "section-title", text: "Other instructors" })); box.append(instructorList(others)); }
+}
+function instructorList(rows) {
   const list = el("ul", { class: "list" });
-  for (const r of state.overview) {
+  for (const r of rows) {
     const load = r.waiting_count === 0 ? "free" : r.waiting_count <= 2 ? "low" : r.waiting_count <= 4 ? "mid" : "high";
     list.append(el("li", { class: "item" + (r.my_queue_entry_id ? " mine" : ""), onclick: () => openQueue(r.resource_id), role: "button", tabindex: "0" },
       el("div", { class: "avatar", style: `--h:${hueOf(r.resource_name)}`, text: initials(r.resource_name) }),
       el("div", { class: "main" },
-        el("div", { class: "name" }, r.resource_name, r.has_check_in_progress ? el("span", { class: "badge progress", text: "checking" }) : null,
+        el("div", { class: "name" }, r.resource_name, r.instructor_kind === "external" ? el("span", { class: "badge", text: "external" }) : null,
+          r.has_check_in_progress ? el("span", { class: "badge progress", text: "checking" }) : null,
           r.resource_status !== "available" ? el("span", { class: "badge urgent", text: "unavailable" }) : null),
         el("div", { class: "meta", text: r.my_queue_entry_id
           ? (r.my_status === "in_progress" ? "You are being checked now" : `You are #${r.my_waiting_position} in line`)
           : (r.has_check_in_progress ? "Checking a resident now" : "Tap to see the queue") })),
       el("div", { class: "count", "data-load": load }, el("b", { text: String(r.waiting_count) }), "waiting")));
   }
-  box.append(list);
+  return list;
 }
 
 function openQueue(resourceId) { state.viewing = resourceId; syncChannels(); loadQueue(resourceId).then(render).catch((e) => banner(friendly(e), "error")); render(); }
@@ -430,6 +460,167 @@ async function editName() {
     const r = await rpc("set_my_display_name", { p_display_name: name });
     state.profile.display_name = r.display_name;
   }, "Name updated.");
+}
+
+// ---------- accounts: setup, settings, schedule, people (admin) ----------
+function applyTabs() {
+  const machinesOn = scannersOn() || printersOn();
+  $("tabFaults").classList.toggle("hidden", !(machinesOn && isStaff()));
+  $("tabMachines").classList.toggle("hidden", !(machinesOn && isAdmin()));
+  $("tabPeople").classList.toggle("hidden", !isAdmin());
+  if (["faults", "machines", "people"].includes(state.tab) && !isAdmin() && !(state.tab === "faults" && isStaff())) state.tab = "mine";
+}
+const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+const WEEK_CHOICES = [["off", "—"], ["all", "Every week"], ["1,3", "1st & 3rd"], ["2,4", "2nd & 4th"]];
+function radioGroup(name, options, value) {
+  const box = el("div", { class: "row" });
+  for (const [v, label] of options) {
+    const r = el("input", { type: "radio", name, value: v, id: `${name}_${v}` }); r.checked = v === value;
+    box.append(el("label", { class: "choice", for: `${name}_${v}` }, r, " " + label));
+  }
+  return box;
+}
+function accountForm({ setup = false, profile = null, schedule = [] }) {
+  const f = el("form", { class: "account" });
+  const name = el("input", { type: "text", maxlength: "40", id: "acctName", autocomplete: "nickname" });
+  if (setup) f.append(el("label", { for: "acctName", text: "Your name or nickname" }), name,
+    el("div", { class: "warn", text: "Your own name or nickname only. No patient names or HN." }));
+  const role = profile && profile.role === "instructor" ? "instructor" : profile ? "resident" : "";
+  f.append(el("label", { text: "I am a" }), radioGroup("acctRole", [["resident", "Resident"], ["instructor", "Instructor"]], role));
+  const kindBox = el("div", { id: "acctKindBox" }, el("label", { text: "Instructor type" }),
+    radioGroup("acctKind", [["internal", "Internal"], ["external", "External"]], profile?.instructor_kind || "internal"));
+  f.append(kindBox);
+  const admin = el("input", { type: "checkbox", id: "acctAdmin" }); admin.checked = !!profile?.is_admin;
+  f.append(el("label", { class: "choice", for: "acctAdmin" }, admin, " I am an admin"),
+    el("p", { class: "hint", text: "Admins can manage scanners, printers, problem reports and other people's accounts." }));
+  const grid = el("table", { class: "sched" });
+  grid.append(el("tr", {}, el("th", { text: "" }), el("th", { text: "Morning" }), el("th", { text: "Afternoon" })));
+  const sel = {};
+  for (let d = 1; d <= 5; d++) {
+    const tr = el("tr", {}, el("th", { text: DAYS[d - 1] }));
+    for (const sess of ["AM", "PM"]) {
+      const cur = schedule.find((x) => x.weekday === d && x.session_code === sess);
+      const curVal = !cur ? "off" : !cur.weeks ? "all" : cur.weeks.join(",");
+      const s = el("select", { "aria-label": `${DAYS[d - 1]} ${sess === "AM" ? "morning" : "afternoon"}`, id: `sch_${d}_${sess}` });
+      const opts = [...WEEK_CHOICES]; if (!opts.some(([v]) => v === curVal)) opts.push([curVal, `Weeks ${curVal.replace(/,/g, " & ")}`]);
+      for (const [v, label] of opts) s.append(el("option", { value: v, text: label }));
+      s.value = curVal; sel[`${d}_${sess}`] = s; tr.append(el("td", {}, s));
+    }
+    grid.append(tr);
+  }
+  const schedBox = el("div", { id: "acctSchedBox" }, el("label", { text: "When are you in clinic? (same every week)" }), grid,
+    el("p", { class: "hint", text: "You'll be listed first during these sessions. Residents can still join you at other times." }));
+  f.append(schedBox);
+  const sync = () => {
+    const r = f.querySelector("input[name=acctRole]:checked")?.value;
+    const k = f.querySelector("input[name=acctKind]:checked")?.value;
+    kindBox.classList.toggle("hidden", r !== "instructor");
+    schedBox.classList.toggle("hidden", !(r === "instructor" && k === "internal"));
+  };
+  f.addEventListener("change", sync); sync();
+  const read = () => {
+    const r = f.querySelector("input[name=acctRole]:checked")?.value || null;
+    const k = r === "instructor" ? (f.querySelector("input[name=acctKind]:checked")?.value || null) : null;
+    const slots = [];
+    for (const [key, s] of Object.entries(sel)) {
+      if (s.value === "off") continue;
+      const [d, sess] = key.split("_");
+      slots.push({ weekday: Number(d), session: sess, weeks: s.value === "all" ? null : s.value.split(",").map(Number) });
+    }
+    return { name: name.value.replace(/\s+/g, " ").trim(), role: r, kind: k, isAdmin: admin.checked, slots };
+  };
+  return { form: f, read };
+}
+function renderSetup() {
+  const box = $("setupBox"); box.replaceChildren();
+  const { form, read } = accountForm({ setup: true });
+  const btn = el("button", { class: "primary", type: "submit", id: "setupSave" }, "Continue");
+  form.append(el("div", { class: "row end" }, btn));
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const v = read();
+    if (!v.name || v.name.length > 40 || /[<>]/.test(v.name)) { banner(MESSAGES.invalid_display_name, "error"); return; }
+    if (!v.role) { banner(MESSAGES.invalid_role, "error"); return; }
+    btn.disabled = true;
+    try {
+      await rpc("complete_setup", { p_display_name: v.name, p_role: v.role, p_instructor_kind: v.kind, p_is_admin: v.isAdmin });
+      if (v.role === "instructor" && v.kind === "internal" && v.slots.length) await rpc("set_my_schedule", { p_slots: v.slots });
+      const prof = ((await rpc("get_my_profile")) || [])[0];
+      if (!prof) throw new Error("setup_not_found");
+      await enterApp(prof);
+    } catch (e) { banner(friendly(e), "error"); btn.disabled = false; }
+  });
+  box.append(form);
+}
+async function openSettings() {
+  state.tab = "settings"; state.viewing = null; state.viewingMachine = null; state.schedule = null;
+  syncChannels(); render();
+  try { state.schedule = state.profile.role === "instructor" ? ((await rpc("get_my_schedule")) || []) : []; render(); }
+  catch (e) { banner(friendly(e), "error"); }
+}
+function renderSettings() {
+  const box = $("settingsTab"); box.replaceChildren();
+  if (state.schedule === null) { box.append(el("p", { class: "empty", text: "Loading…" })); return; }
+  const { form, read } = accountForm({ profile: state.profile, schedule: state.schedule });
+  const save = el("button", { class: "primary", type: "submit", id: "settingsSave", disabled: state.busy }, "Save");
+  form.append(el("div", { class: "row end" }, save));
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const v = read();
+    if (!v.role) { banner(MESSAGES.invalid_role, "error"); return; }
+    act(async () => {
+      await rpc("update_my_account", { p_role: v.role, p_instructor_kind: v.kind, p_is_admin: v.isAdmin });
+      if (v.role === "instructor" && v.kind === "internal") await rpc("set_my_schedule", { p_slots: v.slots });
+      state.profile = ((await rpc("get_my_profile")) || [])[0] || state.profile;
+      state.schedule = v.role === "instructor" ? ((await rpc("get_my_schedule")) || []) : [];
+      applyTabs();
+    }, "Settings saved.");
+  });
+  box.append(el("div", { class: "card" }, el("h2", { text: "Settings" }), form));
+}
+function describeChange(c) {
+  if (!c) return "";
+  const lab = (x) => !x ? "" : (x.role === "instructor" ? (x.instructor_kind === "external" ? "external instructor" : "instructor") : (x.role || "")) + (x.is_admin ? " + admin" : "");
+  if (c.from && c.to) return `${lab(c.from)} → ${lab(c.to)}`;
+  if (c.active === false) return "disabled"; if (c.active === true) return "enabled";
+  return "";
+}
+function renderPeople() {
+  const box = $("peopleTab"); box.replaceChildren();
+  box.append(el("p", { class: "hint", text: "Newest changes first. Anyone can change their own role or admin setting; you can change it back here." }));
+  const ul = el("ul", { class: "list" });
+  for (const u of state.people) {
+    const editing = state.editingPerson === u.user_id;
+    const meta = (u.last_change_at ? `${describeChange(u.last_change)} · ${u.last_change_by || "?"} · ${timeOf(u.last_change_at)}` : "No changes");
+    const li = el("li", { class: "item person" + (u.active ? "" : " off") },
+      el("div", { class: "main" },
+        el("div", { class: "name" }, u.display_name,
+          el("span", { class: "badge", text: u.role === "instructor" ? (u.instructor_kind === "external" ? "external instr." : "instructor") : u.role }),
+          u.is_admin ? el("span", { class: "badge warn", text: "admin" }) : null,
+          u.active ? null : el("span", { class: "badge oos", text: "disabled" })),
+        el("div", { class: "meta", text: meta })),
+      el("button", { class: "ghost small", type: "button", onclick: () => { state.editingPerson = editing ? null : u.user_id; render(); } }, editing ? "Close" : "Change"));
+    ul.append(li);
+    if (editing) ul.append(personEditor(u));
+  }
+  box.append(ul);
+}
+function personEditor(u) {
+  const role = el("select", { "aria-label": "Role" }, ...[["resident", "Resident"], ["instructor:internal", "Instructor (internal)"], ["instructor:external", "Instructor (external)"]]
+    .map(([v, t]) => el("option", { value: v, text: t })));
+  role.value = u.role === "instructor" ? `instructor:${u.instructor_kind || "internal"}` : "resident";
+  const adm = el("input", { type: "checkbox", id: "pAdmin" }); adm.checked = !!u.is_admin;
+  const act_ = el("input", { type: "checkbox", id: "pActive" }); act_.checked = !!u.active;
+  return el("li", { class: "card editor" }, role,
+    el("label", { class: "choice", for: "pAdmin" }, adm, " Admin"),
+    el("label", { class: "choice", for: "pActive" }, act_, " Account enabled"),
+    el("div", { class: "row end" }, el("button", { class: "primary", type: "button", disabled: state.busy, onclick: () => {
+      const [r, k] = role.value.split(":");
+      act(async () => {
+        await rpc("admin_update_user", { p_user_id: u.user_id, p_role: r, p_instructor_kind: k || null, p_is_admin: adm.checked, p_active: act_.checked });
+        state.editingPerson = null; await loadPeople();
+      }, `Saved ${u.display_name}.`);
+    } }, "Save")));
 }
 
 // ---------- privacy notice ----------
@@ -806,17 +997,21 @@ async function start() {
 
   let profile = [];
   try { profile = (await rpc("get_my_profile")) || []; } catch (e) { banner(friendly(e), "error"); }
-  if (!profile.length) { show("notRosteredView"); return; }
-  state.profile = profile[0];
+  if (!profile.length) { renderSetup(); show("setupView"); return; }
+  await enterApp(profile[0]);
+}
+let appStarted = false;
+async function enterApp(profile) {
+  state.profile = profile;
   await ensurePrivacyAck();
   if (state.profile.role === "admin") state.tab = "all";
-  const machinesOn = scannersOn() || printersOn();
-  $("tabFaults").classList.toggle("hidden", !(machinesOn && isStaff()));
-  $("tabMachines").classList.toggle("hidden", !(machinesOn && state.profile.role === "admin"));
+  applyTabs();
   show("mainView");
   await recoverPendingJoin();
   await refreshAll();
 
+  if (appStarted) return;
+  appStarted = true;
   // Safety net: slow refresh while visible; immediate refresh when the app comes back.
   setInterval(() => { if (document.visibilityState === "visible") refreshAll(); }, (C.safetyRefreshSeconds || 60) * 1000);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshAll(); });
