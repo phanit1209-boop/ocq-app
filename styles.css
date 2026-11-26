@@ -157,3 +157,6 @@ li.editor { display: flex; flex-direction: column; gap: 8px; }
   border-radius: 12px; background: #111; color: #fff; line-height: 1; flex-shrink: 0; }
 .unit-big small { font-size: 11px; letter-spacing: .08em; opacity: .8; }
 .unit-big b { font-size: 34px; font-weight: 800; }
+.summary-box { margin-top: 14px; padding-top: 10px; border-top: 1px solid #e5e7eb; }
+.summary-box label { display: block; margin-top: 10px; font-weight: 600; }
+.purpose { font-size: 16px; font-weight: 600; color: #1f2937; margin-top: 2px; }

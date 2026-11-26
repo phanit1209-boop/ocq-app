@@ -20,6 +20,11 @@ const isStaff = () => isAdmin() || state.profile?.role === "technician";
 
 const MESSAGES = {
   invalid_role: "Choose Resident or Instructor.",
+  invalid_purpose: "'What for' must be 100 characters or fewer, without < or >.",
+  invalid_email: "That email address doesn't look right.",
+  email_required_for_summary: "Add an email address to receive the summary.",
+  invalid_summary_frequency: "Choose Off, Weekly or Monthly.",
+  invalid_summary_scope: "Choose what the summary should include.",
   invalid_status: "Choose a status.",
   invalid_status_time: "Choose a time later than now.",
   invalid_instructor_kind: "Choose Internal or External.",
@@ -71,12 +76,12 @@ const MESSAGES = {
   invalid_machine_code: "Machine codes use letters, numbers, - or _ (up to 20).",
   invalid_machine_name: "Machine names must be 1–40 characters, without < or >.",
   machine_code_taken: "That machine code is already used.",
-  machine_has_active_entries: "People are still queued for this machine. Mark it out of service and wait until the queue is empty.",
+  machine_has_active_entries: "People are still queued for this machine. Mark it 'Do not use' and wait until the queue is empty.",
   entry_not_waiting_machine: "This entry is no longer waiting.",
 };
 const FAULT_LABEL = { will_not_start: "Will not start", quality: "Scan or print quality", software_connection: "Software or connection",
   physical_damage: "Physical damage", other: "Other" };
-const STATUS_LABEL = { available: "Available", issue_reported: "Problem reported", out_of_service: "Out of service" };
+const STATUS_LABEL = { available: "Available", issue_reported: "Problem reported", out_of_service: "Do not use" };
 
 // ---------- small helpers ----------
 function el(tag, props = {}, ...children) {
@@ -207,8 +212,9 @@ function syncChannels() {
 }
 
 // ---------- actions ----------
-async function joinQueue(resourceId, unit, priority, reason) {
-  const payload = { resourceId, unit, priority, reason: priority === "urgent" ? reason.trim() : null };
+async function joinQueue(resourceId, unit, priority, reason, purpose = "") {
+  const payload = { resourceId, unit, priority, reason: priority === "urgent" ? reason.trim() : null,
+    purpose: purpose.replace(/\s+/g, " ").trim() || null };
   let pending = null;
   try { pending = JSON.parse(localStorage.getItem(PENDING_KEY) || "null"); } catch { pending = null; }
   if (!pending || JSON.stringify(pending.payload) !== JSON.stringify(payload)) pending = { requestId: uuid(), payload };
@@ -222,7 +228,13 @@ async function sendPendingJoin(pending) {
       p_request_id: pending.requestId, p_resource_id: p.resourceId, p_dental_unit: p.unit,
       p_priority: p.priority, p_urgent_reason: p.reason,
     });
-    if (!error) { try { localStorage.removeItem(PENDING_KEY); } catch {} return data; }
+    if (!error) {
+      try { localStorage.removeItem(PENDING_KEY); } catch {}
+      if (p.purpose && data?.queue_entry_id) {
+        await sb.rpc("set_entry_purpose", { p_queue_entry_id: data.queue_entry_id, p_purpose: p.purpose }); // best effort
+      }
+      return data;
+    }
     if (!isNetworkError(error)) { try { localStorage.removeItem(PENDING_KEY); } catch {} throw error; }
     if (attempt < 3) await sleep(700 * attempt);
     else throw error;                                // keep the pending request for the next visit
@@ -355,7 +367,10 @@ function askStatus(name) {
 async function setStatus(r, isOwner) {
   const v = await askStatus(r.resource_name);
   if (!v) return;
-  act(() => rpc("set_instructor_status", { p_resource_id: isOwner ? null : r.resource_id, p_mode: v.mode, p_time: v.time }), "Status updated.");
+  act(async () => {
+    await rpc("set_instructor_status", { p_resource_id: isOwner ? null : r.resource_id, p_mode: v.mode, p_time: v.time });
+    if (state.tab === "people") { await loadOverview(); $("peopleTab").replaceChildren(); }
+  }, "Status updated.");
 }
 function instructorList(rows) {
   const list = el("ul", { class: "list" });
@@ -448,6 +463,7 @@ function renderQueueBlock(r) {
         el("div", { class: "name" }, q.display_name, q.is_mine ? " (you)" : "",
           q.priority === "urgent" ? el("span", { class: "badge urgent", text: "Urgent" }) : null),
         el("div", { class: "meta", text: meta.join(" · ") }),
+        q.purpose ? el("div", { class: "purpose", text: "For: " + q.purpose }) : null,
         q.urgent_reason ? el("div", { class: "reason", text: "Reason: " + q.urgent_reason }) : null),
       actions.length ? el("div", { class: "row" }, actions) : null));
   }
@@ -463,11 +479,14 @@ function renderJoinForm(r) {
   const reasonBox = el("div", { class: "hidden" }, el("label", { for: "reasonInput", text: "Urgent reason" }), reason,
     el("div", { class: "warn", text: "Do not enter patient names, HN or other identifying details." }));
   prio.addEventListener("change", () => reasonBox.classList.toggle("hidden", prio.value !== "urgent"));
+  const purpose = el("input", { type: "text", id: "purposeInput", maxlength: "100", placeholder: "e.g. wire bending check, bracket position" });
   const submit = el("button", { class: "primary", type: "submit", disabled: !open || state.busy }, "Join queue");
   const form = el("form", { class: "card" },
     el("h2", { text: `Join ${r.resource_name}'s queue` }),
     el("p", { class: "warn closedNote" + (open ? " hidden" : ""), text: open ? "" : (state.session ? "This queue is not available." : "Registration is closed now.") }),
     el("label", { for: "unitInput", text: "Dental unit (1–999)" }), unit,
+    el("label", { for: "purposeInput", text: "What for? (optional)" }), purpose,
+    el("div", { class: "warn", text: "No patient names or HN." }),
     el("label", { for: "prioInput", text: "Priority" }), prio, reasonBox, el("div", { class: "row end" }, submit));
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
@@ -475,7 +494,7 @@ function renderJoinForm(r) {
     if (!Number.isInteger(n) || n < 1 || n > 999) { banner(MESSAGES.invalid_dental_unit, "error"); return; }
     if (prio.value === "urgent" && (!reason.value.trim() || reason.value.trim().length > 200)) { banner(MESSAGES.invalid_urgent_reason, "error"); return; }
     act(async () => {
-      const res = await joinQueue(r.resource_id, n, prio.value, reason.value);
+      const res = await joinQueue(r.resource_id, n, prio.value, reason.value, purpose.value);
       banner(res.recovered ? `Already registered: you are number ${res.queue_number}.` : `Joined: you are number ${res.queue_number}.`, "ok");
     });
   });
@@ -624,20 +643,42 @@ async function openSettings() {
   catch (e) { banner(friendly(e), "error"); }
 }
 let settingsCard = null;   // built once per visit so a background refresh never wipes unsaved choices
+function summaryFields(prefix, { email, freq, scope, admin }) {
+  const e = el("input", { type: "text", inputmode: "email", autocapitalize: "off", id: `${prefix}Email`, maxlength: "254", autocomplete: "email", placeholder: "name@example.com" }); e.value = email || "";
+  const f = el("select", { id: `${prefix}Freq`, "aria-label": "Summary" },
+    ...[["none", "Off – no summary"], ["weekly", "Weekly"], ["monthly", "Monthly"]].map(([v, t]) => el("option", { value: v, text: t })));
+  f.value = freq || "none";
+  const sc = el("select", { id: `${prefix}Scope`, "aria-label": "Include" },
+    el("option", { value: "own", text: "Only my own data" }), el("option", { value: "all", text: "Everyone (whole department)" }));
+  sc.value = scope || "own";
+  const scopeBox = el("div", { id: `${prefix}ScopeBox` }, el("label", { for: `${prefix}Scope`, text: "Include" }), sc);
+  const sync = () => { scopeBox.classList.toggle("hidden", !admin() || f.value === "none"); };
+  f.addEventListener("change", sync); sync();
+  const node = el("div", { class: "summary-box" },
+    el("label", { for: `${prefix}Freq`, text: "Email summary" }), f,
+    el("label", { for: `${prefix}Email`, text: "Email address" }), e,
+    el("p", { class: "hint", text: "Optional. Used only to send you your summary. Only you and admins can see it." }), scopeBox);
+  return { node, sync, read: () => ({ email: e.value.trim(), freq: f.value, scope: admin() && f.value !== "none" ? sc.value : "own" }) };
+}
 function renderSettings() {
   const box = $("settingsTab");
   if (state.schedule === null) { settingsCard = null; box.replaceChildren(el("p", { class: "empty", text: "Loading…" })); return; }
   if (settingsCard && box.contains(settingsCard)) return;
   box.replaceChildren();
   const { form, read } = accountForm({ profile: state.profile, schedule: state.schedule });
+  const sum = summaryFields("set", { email: state.profile.email, freq: state.profile.summary_frequency, scope: state.profile.summary_scope,
+    admin: () => $("acctAdmin")?.checked });
+  form.addEventListener("change", sum.sync);
   const save = el("button", { class: "primary", type: "submit", id: "settingsSave", disabled: state.busy }, "Save");
-  form.append(el("div", { class: "row end" }, save));
+  form.append(sum.node, el("div", { class: "row end" }, save));
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
-    const v = read();
+    const v = read(), c = sum.read();
     if (!v.role) { banner(MESSAGES.invalid_role, "error"); return; }
+    if (c.freq !== "none" && !c.email) { banner(MESSAGES.email_required_for_summary, "error"); return; }
     act(async () => {
       await rpc("update_my_account", { p_role: v.role, p_instructor_kind: v.kind, p_is_admin: v.isAdmin });
+      await rpc("update_my_contact", { p_email: c.email || null, p_summary_frequency: c.freq, p_summary_scope: c.scope });
       if (v.role === "instructor" && v.kind === "internal") await rpc("set_my_schedule", { p_slots: v.slots });
       state.profile = ((await rpc("get_my_profile")) || [])[0] || state.profile;
       state.schedule = v.role === "instructor" ? ((await rpc("get_my_schedule")) || []) : [];
@@ -663,6 +704,7 @@ function renderPeople() {
   const ul = el("ul", { class: "list" });
   for (const u of state.people) {
     const editing = state.editingPerson === u.user_id;
+    const ov = u.instructor_resource_id ? state.overview.find((r) => r.resource_id === u.instructor_resource_id) : null;
     const meta = (u.last_change_at ? `${describeChange(u.last_change)} · ${u.last_change_by || "?"} · ${timeOf(u.last_change_at)}` : "No changes");
     const li = el("li", { class: "item person" + (u.active ? "" : " off") },
       el("div", { class: "main" },
@@ -670,7 +712,9 @@ function renderPeople() {
           el("span", { class: "badge", text: u.role === "instructor" ? (u.instructor_kind === "external" ? "external instr." : "instructor") : u.role }),
           u.is_admin ? el("span", { class: "badge warn", text: "admin" }) : null,
           u.active ? null : el("span", { class: "badge oos", text: "disabled" })),
-        el("div", { class: "meta", text: meta })),
+        el("div", { class: "meta", text: meta }),
+        ov ? el("div", { class: "row status-line" }, statusBadge(ov),
+          el("button", { class: "ghost small", type: "button", disabled: state.busy, onclick: () => setStatus(ov, false) }, "Set status")) : null),
       el("button", { class: "ghost small", type: "button", onclick: () => { state.editingPerson = editing ? null : u.user_id; $("peopleTab").replaceChildren(); render(); } }, editing ? "Close" : "Change"));
     ul.append(li);
     if (editing) ul.append(personEditor(u));
@@ -693,16 +737,21 @@ function personEditor(u) {
     const g = scheduleGrid(sch || [], "psch"); readSlots = g.slots;
     schedWrap.replaceChildren(el("label", { text: "Weekly clinic sessions" }), g.grid);
   }).catch((e) => banner(friendly(e), "error"));
+  const sum = summaryFields("p", { email: u.email, freq: u.summary_frequency, scope: u.summary_scope, admin: () => adm.checked });
+  adm.addEventListener("change", sum.sync);
   box.append(el("label", { for: "pName", text: "Name" }), name, el("label", { for: "pRole", text: "Role" }), role,
     el("label", { class: "choice", for: "pAdmin" }, adm, " Admin"),
-    el("label", { class: "choice", for: "pActive" }, act_, " Account enabled"), schedWrap,
+    el("label", { class: "choice", for: "pActive" }, act_, " Account enabled"), schedWrap, sum.node,
     el("div", { class: "row end" }, el("button", { class: "primary", type: "button", disabled: state.busy, onclick: () => {
       const [r, k] = role.value.split(":");
       const nm = name.value.replace(/\s+/g, " ").trim();
       if (!nm || nm.length > 40 || /[<>]/.test(nm)) { banner(MESSAGES.invalid_display_name, "error"); return; }
+      const c = sum.read();
+      if (c.freq !== "none" && !c.email) { banner(MESSAGES.email_required_for_summary, "error"); return; }
       act(async () => {
         if (nm !== u.display_name) await rpc("admin_set_display_name", { p_user_id: u.user_id, p_display_name: nm });
         await rpc("admin_update_user", { p_user_id: u.user_id, p_role: r, p_instructor_kind: k || null, p_is_admin: adm.checked, p_active: act_.checked });
+        await rpc("admin_set_contact", { p_user_id: u.user_id, p_email: c.email || null, p_summary_frequency: c.freq, p_summary_scope: c.scope });
         if (r === "instructor" && k === "internal" && readSlots) await rpc("admin_set_schedule", { p_user_id: u.user_id, p_slots: readSlots() });
         state.editingPerson = null; $("peopleTab").replaceChildren(); await loadPeople();
       }, `Saved ${nm}.`);
@@ -755,7 +804,7 @@ function askNote({ title, hint = "", label = "Note", required = true, category =
   });
 }
 function machineBadge(m) {
-  if (m.resource_status === "out_of_service") return el("span", { class: "badge oos", text: "Out of service" });
+  if (m.resource_status === "out_of_service") return el("span", { class: "badge oos", text: "Do not use" });
   if (m.resource_status === "issue_reported") return el("span", { class: "badge warn", text: "Problem reported" });
   if (m.in_use) return el("span", { class: "badge progress", text: isPrinter(m) ? (m.over_limit ? "Printing · not collected" : "Printing")
     : (m.over_limit ? "In use · over 30 min" : "In use") });
@@ -931,8 +980,16 @@ function renderMachineView(id) {
       label: "Details (optional)", required: false, category: true });
     if (n) act(() => rpc("report_fault", { p_resource_id: id, p_category: n.category, p_note: n.note }), "Problem reported. Thank you.");
   } }, "Report a problem");
+  const useBtns = !isStaff() ? null : el("div", { class: "row" },
+    m.resource_status !== "out_of_service" ? el("button", { class: "danger small", type: "button", disabled: state.busy, onclick: async () => {
+      const n = await askNote({ title: `Do not use: ${m.resource_name}`, hint: "Everyone sees 'Do not use'. New joins and starts are blocked; people waiting keep their place.", label: "Reason", okText: "Do not use" });
+      if (n) act(() => rpc("set_machine_out_of_service", { p_resource_id: id, p_note: n.note }), "Marked 'Do not use'."); } }, "Do not use") : null,
+    m.resource_status !== "available" ? el("button", { class: "primary small", type: "button", disabled: state.busy, onclick: async () => {
+      const n = await askNote({ title: `OK to use: ${m.resource_name}`, hint: "Short note on what was fixed or checked.", okText: "OK to use" });
+      if (n) act(() => rpc("set_machine_back_in_service", { p_resource_id: id, p_note: n.note }), "Marked OK to use."); } }, "OK to use") : null);
   const card = el("div", { class: "card" },
     el("div", { class: "row", style: "justify-content:space-between" }, el("h2", {}, m.resource_name, machineBadge(m)), reportBtn),
+    useBtns,
     el("div", { class: "meta", text: `${m.resource_status === "available" && m.in_use ? "In use" : (STATUS_LABEL[m.resource_status] || m.resource_status)} · ${m.waiting_count} waiting · ${m.ready_count} ready` }),
     !isPrinter(m) && m.in_use && m.in_use_unit ? el("div", { class: "where", text: `Scanner is at unit ${m.in_use_unit}` }) : null);
   if (!rows.length) card.append(el("p", { class: "empty", text: "Nobody is waiting." }));
@@ -966,7 +1023,7 @@ function renderMachineView(id) {
   if (!m.my_queue_entry_id) {
     const canJoin = m.resource_status !== "out_of_service";     // machines are open all day
     box.append(el("div", { class: "card" },
-      el("p", { class: "meta", text: canJoin ? `Join now and tap “I'm ready” when you are at the ${kindWord(m)}.` : `This ${kindWord(m)} is out of service.` }),
+      el("p", { class: "meta", text: canJoin ? `Join now and tap “I'm ready” when you are at the ${kindWord(m)}.` : `Do not use: this ${kindWord(m)} has been taken out of use by an admin.` }),
       el("button", { class: "primary", type: "button", disabled: !canJoin || state.busy, onclick: async () => {
         const unit = isPrinter(m) ? null : await askUnit();
         if (!isPrinter(m) && !unit) return;
@@ -993,13 +1050,6 @@ function renderMachineView(id) {
         const n = await askNote({ title: "Dismiss report", hint: "Say what you checked.", okText: "Dismiss" });
         if (n) act(() => rpc("dismiss_fault", { p_report_id: f.report_id, p_note: n.note }), "Report dismissed."); } }, "Dismiss") : null));
   }
-  fcard.append(el("div", { class: "row", style: "margin-top:8px" },
-    isStaff() && m.resource_status !== "out_of_service" ? el("button", { class: "ghost", type: "button", disabled: state.busy, onclick: async () => {
-      const n = await askNote({ title: "Mark out of service", hint: "New joins and starts are blocked. People waiting keep their place.", okText: "Out of service" });
-      if (n) act(() => rpc("set_machine_out_of_service", { p_resource_id: id, p_note: n.note }), "Marked out of service."); } }, "Out of service") : null,
-    isStaff() && m.resource_status !== "available" ? el("button", { class: "primary", type: "button", disabled: state.busy, onclick: async () => {
-      const n = await askNote({ title: "Back in service", hint: "Short fix note.", okText: "Back in service" });
-      if (n) act(() => rpc("set_machine_back_in_service", { p_resource_id: id, p_note: n.note }), "Back in service."); } }, "Back in service") : null));
   box.append(fcard);
 }
 function renderFaults() {
