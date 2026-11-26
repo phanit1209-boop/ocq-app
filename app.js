@@ -861,7 +861,7 @@ function daysOffSection(userId, prefix) {
 
 // ---------- clinic calendar for everyone (#calendar): who is in / off, no reasons ----------
 // view: day / week / month; who: all instructors (filtered by Internal/External) or one instructor (resource id)
-const clinicCal = { view: "month", anchor: null, who: "all", rows: [], hol: new Map(), loadedKey: "", summary: null };
+const clinicCal = { view: "week", anchor: null, who: "all", rows: [], hol: new Map(), loadedKey: "", summary: null };
 const addDays = (iso, n) => new Date(Date.parse(iso + "T00:00:00Z") + n * 864e5).toISOString().slice(0, 10);
 const weekdayOf = (iso) => new Date(iso + "T00:00:00Z").getUTCDay();          // 0 Sun … 6 Sat
 const mondayOf = (iso) => { const d = weekdayOf(iso); return addDays(iso, d === 0 ? 1 : d === 6 ? 2 : 1 - d); };  // weekend -> next Monday
@@ -953,9 +953,9 @@ function renderCalendar() {
         el("span", { class: "num", text: String(+iso.slice(8, 10)) }),
         hol ? el("span", { class: "hnote", text: "Holiday" }) : null,
         ...people.map((p) => el("span", { class: "who-row" }, one ? null : el("span", { class: "who", text: shortName(p.name) }),
-          el("span", { class: "halves" + (one ? "" : " mini") }, ...["AM", "PM"].map((k) => el("span", { class: "half " + (p[k]?.state || "none"), text: halfLabel(p[k]) })))),
-          one && people[0] && (people[0].AM?.state === "limited" || people[0].PM?.state === "limited")
-            ? el("span", { class: "tnote", text: (people[0].AM?.state === "limited" ? people[0].AM : people[0].PM).time_note }) : null));
+          el("span", { class: "halves" + (one ? "" : " mini") }, ...["AM", "PM"].map((k) => el("span", { class: "half " + (p[k]?.state || "none"), text: halfLabel(p[k]) }))))),
+        one && people[0] && (people[0].AM?.state === "limited" || people[0].PM?.state === "limited")
+          ? el("span", { class: "tnote", text: (people[0].AM?.state === "limited" ? people[0].AM : people[0].PM).time_note }) : null);
     };
     const months = clinicCal.view === "2month" ? [0, 1] : [0];
     body = el("div", { class: "months" }, ...months.map((k) => {
