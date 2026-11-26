@@ -487,7 +487,7 @@ function renderMachineList(type) {
   if (!list.length) { box.append(el("p", { class: "empty", text: `No ${type}s are set up yet.` })); return; }
   const ul = el("ul", { class: "list" });
   for (const m of list) {
-    const busyText = isPrinter(m) ? `Printing for ${m.in_use_by} · free about ${timeOf(m.in_use_until)}` : `In use by ${m.in_use_by} since ${timeOf(m.in_use_since)}`;
+    const busyText = isPrinter(m) ? `Printing for ${m.in_use_by} · free about ${timeOf(m.in_use_until)}` : `In use by ${m.in_use_by}` + (m.in_use_unit ? ` at unit ${m.in_use_unit}` : "") + ` since ${timeOf(m.in_use_since)}`;
     const meta = m.my_turn ? "Your turn — tap to start"
       : m.my_status === "in_progress" ? (isPrinter(m) ? `Your print · ready about ${timeOf(m.in_use_until)}` : "You are scanning now")
       : m.my_queue_entry_id ? `You are #${m.my_waiting_position} in line` + (m.my_ready ? " · ready" : "")
@@ -499,6 +499,33 @@ function renderMachineList(type) {
         el("b", { text: String(m.waiting_count) }), "waiting")));
   }
   box.append(ul);
+}
+// ---------- scanners: unit number (scanners are carried to the chair) ----------
+function lastUnit() { try { return localStorage.getItem("ocq_last_unit") || ""; } catch { return ""; } }
+function askUnit(title = "Which dental unit are you at?", okText = "Join", current = null) {
+  return new Promise((resolve) => {
+    const d = $("unitDialog"), inp = $("machineUnit");
+    $("unitTitle").textContent = title; $("unitOk").textContent = okText;
+    inp.value = current ? String(current) : lastUnit();
+    d.onclose = () => {
+      if (d.returnValue !== "ok") return resolve(null);
+      const n = Number(inp.value);
+      if (!Number.isInteger(n) || n < 1 || n > 999) { banner(MESSAGES.invalid_dental_unit, "error"); return resolve(null); }
+      try { localStorage.setItem("ocq_last_unit", String(n)); } catch { /* storage unavailable */ }
+      resolve(n);
+    };
+    d.showModal(); inp.focus(); inp.select();
+  });
+}
+function myMachineUnit(m) {
+  const mine = (state.mqueues.get(m.resource_id) || []).find((q) => q.is_mine);
+  return mine?.dental_unit ?? null;
+}
+function changeUnitButton(m, id) {
+  return el("button", { class: "ghost", type: "button", disabled: state.busy, onclick: async () => {
+    const n = await askUnit("Moved to another unit?", "Save", myMachineUnit(m));
+    if (n) act(() => rpc("set_machine_unit", { p_queue_entry_id: id, p_dental_unit: n }), `Unit changed to ${n}.`);
+  } }, "Change unit");
 }
 // ---------- printers: dialogs and reminders ----------
 function askPrintTime(title = "How long is the print?", okText = "Start printing") {
@@ -576,9 +603,10 @@ function machineStatusCard(m, onMachinePage = false) {
   }
   if (m.my_status === "in_progress") {
     return el("div", { class: "turn" }, el("div", { class: "big", text: `Scanning on ${m.resource_name}` }),
-      el("div", { text: `Started ${timeOf(m.in_use_since)}` + (m.over_limit ? " · over the 30-minute limit" : "") }),
+      el("div", { text: (m.in_use_unit ? `Unit ${m.in_use_unit} · ` : "") + `Started ${timeOf(m.in_use_since)}` + (m.over_limit ? " · over the 30-minute limit" : "") }),
       el("div", { class: "row", style: "margin-top:10px" }, el("button", { type: "button", disabled: state.busy,
-        onclick: () => act(() => rpc("finish_machine_turn", { p_queue_entry_id: id }), "Finished. The scanner is free for the next person.") }, "Finish")));
+        onclick: () => act(() => rpc("finish_machine_turn", { p_queue_entry_id: id }), "Finished. The scanner is free for the next person.") }, "Finish"),
+        changeUnitButton(m, id)));
   }
   if (m.my_turn) {
     return el("div", { class: "turn" }, el("div", { class: "big", text: "Your turn" }),
@@ -601,6 +629,7 @@ function machineStatusCard(m, onMachinePage = false) {
         onclick: () => act(() => rpc("set_machine_ready", { p_queue_entry_id: id, p_ready: !m.my_ready }), m.my_ready ? "Marked not ready." : "Marked ready.") },
         m.my_ready ? "Not ready yet" : (isPrinter(m) ? "I'm ready to print" : "I'm ready to scan")),
       onMachinePage ? null : el("button", { class: "ghost", type: "button", onclick: () => openMachine(m.resource_id) }, "View queue"),
+      !isPrinter(m) && onMachinePage ? changeUnitButton(m, id) : null,
       el("button", { class: "danger", type: "button", disabled: state.busy, onclick: async () => {
         if (await askConfirm(`Leave the ${m.resource_name} queue?`)) act(() => rpc("cancel_my_entry", { p_queue_entry_id: id }), "You have left the queue."); } }, "Leave")));
 }
@@ -619,13 +648,15 @@ function renderMachineView(id) {
   } }, "Report a problem");
   const card = el("div", { class: "card" },
     el("div", { class: "row", style: "justify-content:space-between" }, el("h2", {}, m.resource_name, machineBadge(m)), reportBtn),
-    el("div", { class: "meta", text: `${m.resource_status === "available" && m.in_use ? "In use" : (STATUS_LABEL[m.resource_status] || m.resource_status)} · ${m.waiting_count} waiting · ${m.ready_count} ready` }));
+    el("div", { class: "meta", text: `${m.resource_status === "available" && m.in_use ? "In use" : (STATUS_LABEL[m.resource_status] || m.resource_status)} · ${m.waiting_count} waiting · ${m.ready_count} ready` }),
+    !isPrinter(m) && m.in_use && m.in_use_unit ? el("div", { class: "where", text: `Scanner is at unit ${m.in_use_unit}` }) : null);
   if (!rows.length) card.append(el("p", { class: "empty", text: "Nobody is waiting." }));
   else {
     const list = el("ul", { class: "list" });
     for (const q of rows) {
-      const meta = q.status === "in_progress" ? (isPrinter(m) ? `printing · ready about ${timeOf(q.expected_end_at)}` : `scanning since ${timeOf(q.started_at)}`)
-        : `joined ${timeOf(q.joined_at)}`;
+      const unit = !isPrinter(m) && q.dental_unit ? `unit ${q.dental_unit} · ` : "";
+      const meta = unit + (q.status === "in_progress" ? (isPrinter(m) ? `printing · ready about ${timeOf(q.expected_end_at)}` : `scanning since ${timeOf(q.started_at)}`)
+        : `joined ${timeOf(q.joined_at)}`);
       list.append(el("li", { class: "item" + (q.is_mine ? " mine" : "") + (q.status === "in_progress" ? " progress" : "") },
         el("div", { class: "pos", text: q.status === "in_progress" ? "▶" : String(q.waiting_position) }),
         el("div", { class: "main" },
@@ -651,10 +682,14 @@ function renderMachineView(id) {
     const canJoin = m.resource_status !== "out_of_service";     // machines are open all day
     box.append(el("div", { class: "card" },
       el("p", { class: "meta", text: canJoin ? `Join now and tap “I'm ready” when you are at the ${kindWord(m)}.` : `This ${kindWord(m)} is out of service.` }),
-      el("button", { class: "primary", type: "button", disabled: !canJoin || state.busy, onclick: () => act(async () => {
-        const r = await rpc("join_machine_queue", { p_request_id: uuid(), p_resource_id: id });
-        banner(`Joined: you are number ${r.queue_number}.`, "ok");
-      }) }, "Join queue")));
+      el("button", { class: "primary", type: "button", disabled: !canJoin || state.busy, onclick: async () => {
+        const unit = isPrinter(m) ? null : await askUnit();
+        if (!isPrinter(m) && !unit) return;
+        act(async () => {
+          const r = await rpc("join_machine_queue", { p_request_id: uuid(), p_resource_id: id, p_dental_unit: unit });
+          banner(`Joined: you are number ${r.queue_number}.`, "ok");
+        });
+      } }, "Join queue")));
   }
 
   if (!faults.length && !isStaff()) return;          // nothing to show; reporting is at the top

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
   <title>Ortho Clinic Queue</title>
-  <link rel="stylesheet" href="styles.css?v=202611260131">
+  <link rel="stylesheet" href="styles.css?v=202611260833">
 </head>
 <body>
   <header class="topbar">
@@ -101,6 +101,18 @@
     </form>
   </dialog>
 
+  <dialog id="unitDialog">
+    <form method="dialog">
+      <h1 id="unitTitle">Which dental unit are you at?</h1>
+      <p class="hint">The next person uses this to find the scanner.</p>
+      <label for="machineUnit">Dental unit (1–999)</label>
+      <input id="machineUnit" type="number" inputmode="numeric">
+      <div class="row end" style="margin-top:14px">
+        <button value="cancel" class="ghost" type="submit" formnovalidate>Cancel</button>
+        <button value="ok" class="primary" id="unitOk" type="submit">Join</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="printDialog">
     <form method="dialog">
       <h1 id="printTitle">How long is the print?</h1>
@@ -182,7 +194,7 @@
 
   <footer class="footer"><button type="button" class="linkish" id="privacyLink">Privacy notice</button></footer>
 
-  <script src="config.js?v=202611260131"></script>
-  <script type="module" src="app.js?v=202611260131"></script>
+  <script src="config.js?v=202611260833"></script>
+  <script type="module" src="app.js?v=202611260833"></script>
 </body>
 </html>
