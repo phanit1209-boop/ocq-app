@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
   <title>Ortho Clinic Queue</title>
-  <link rel="stylesheet" href="styles.css?v=202611261033">
+  <link rel="stylesheet" href="styles.css?v=202611261121">
 </head>
 <body>
   <header class="topbar">
@@ -44,6 +44,7 @@
         <button type="button" role="tab" data-tab="faults" id="tabFaults" class="hidden">Faults</button>
         <button type="button" role="tab" data-tab="machines" id="tabMachines" class="hidden">Machines</button>
         <button type="button" role="tab" data-tab="people" id="tabPeople" class="hidden">People</button>
+        <button type="button" role="tab" data-tab="calendar" id="tabCalendar" class="hidden">Calendar</button>
       </nav>
 
       <section id="mineTab"></section>
@@ -56,6 +57,7 @@
       <section id="machinesTab" class="hidden"></section>
       <section id="peopleTab" class="hidden"></section>
       <section id="settingsTab" class="hidden"></section>
+      <section id="calendarTab" class="hidden"></section>
     </section>
   </main>
 
@@ -136,6 +138,30 @@
         <button value="cancel" class="ghost" type="submit" formnovalidate>Cancel</button>
         <button value="schedule" class="ghost hidden" id="statusReset" type="submit" formnovalidate>Back to my schedule</button>
         <button value="ok" class="primary" id="statusOk" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="dayDialog">
+    <form method="dialog">
+      <h1 id="dayTitle">Day</h1>
+      <p class="hint" id="dayHint">Overrides the usual weekly schedule for this date only.</p>
+      <label class="choice"><input type="radio" name="dayMode" value="schedule" id="dayUsual"> Usual schedule</label>
+      <label class="choice"><input type="radio" name="dayMode" value="off_all" id="dayOffAll"> Off – whole day</label>
+      <label class="choice"><input type="radio" name="dayMode" value="off_AM" id="dayOffAM"> Off – morning</label>
+      <label class="choice"><input type="radio" name="dayMode" value="off_PM" id="dayOffPM"> Off – afternoon</label>
+      <label class="choice"><input type="radio" name="dayMode" value="in_all" id="dayInAll"> In clinic – whole day (extra day)</label>
+      <label class="choice"><input type="radio" name="dayMode" value="in_AM" id="dayInAM"> In clinic – morning (extra)</label>
+      <label class="choice"><input type="radio" name="dayMode" value="in_PM" id="dayInPM"> In clinic – afternoon (extra)</label>
+      <label class="choice"><input type="radio" name="dayMode" value="until" id="dayUntil"> In clinic only until…</label>
+      <label class="choice"><input type="radio" name="dayMode" value="from" id="dayFrom"> In clinic only from…</label>
+      <label class="choice"><input type="radio" name="dayMode" value="between" id="dayBetween"> In clinic only from… to…</label>
+      <div id="dayTimeBox" class="hidden"><label for="dayTime" id="dayTimeLabel">Time</label><select id="dayTime"></select></div>
+      <div id="dayUntilBox" class="hidden"><label for="dayUntilTime">Until</label><select id="dayUntilTime"></select></div>
+      <div id="dayNoteBox" class="hidden"><label for="dayNote">Reason (optional, only you and admins see it)</label>
+        <input id="dayNote" type="text" maxlength="60" placeholder="e.g. conference"></div>
+      <div class="row end" style="margin-top:14px">
+        <button value="cancel" class="ghost" type="submit" formnovalidate>Cancel</button>
+        <button value="ok" class="primary" id="dayOk" type="submit">Save</button>
       </div>
     </form>
   </dialog>
@@ -238,7 +264,7 @@
 
   <footer class="footer"><button type="button" class="linkish" id="privacyLink">Privacy notice</button></footer>
 
-  <script src="config.js?v=202611261033"></script>
-  <script type="module" src="app.js?v=202611261033"></script>
+  <script src="config.js?v=202611261121"></script>
+  <script type="module" src="app.js?v=202611261121"></script>
 </body>
 </html>

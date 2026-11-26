@@ -26,6 +26,10 @@ const MESSAGES = {
   invalid_summary_frequency: "Choose Off, Weekly or Monthly.",
   invalid_summary_scope: "Choose what the summary should include.",
   invalid_status: "Choose a status.",
+  invalid_holiday: "Choose a date and a name (up to 60 characters, no < or >).",
+  invalid_days_off: "Check the dates: from today onwards, end on or after the start, at most 120 days.",
+  too_many_days_off: "That's a lot of planned days off already. Remove some old ones first.",
+  day_off_not_found: "That day off was already removed.",
   invalid_status_time: "Choose a time later than now.",
   no_session_left_today: "There are no more clinic sessions today.",
   invalid_instructor_kind: "Choose Internal or External.",
@@ -181,7 +185,7 @@ async function refreshAll() {
     await Promise.all([...instructorIds().map(loadQueue), ...machineIds().map(loadMachineQueue),
       state.viewingMachine ? loadMachineFaults(state.viewingMachine) : null,
       state.tab === "faults" ? loadBoard() : null, state.tab === "machines" ? loadAdminMachines() : null,
-      state.tab === "people" ? loadPeople() : null]);
+      state.tab === "people" ? loadPeople() : null, state.tab === "calendar" ? loadClinicCalendar() : null]);
     syncChannels();
     render();
   } catch (e) { banner(friendly(e), "error"); }
@@ -283,7 +287,7 @@ function render() {
   const viewingAny = !!state.viewing || !!state.viewingMachine;
   for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b.dataset.tab === state.tab && !viewingAny));
   const panes = { mine: "mineTab", all: "allTab", scanners: "scannersTab", printers: "printersTab", faults: "faultsTab", machines: "machinesTab",
-    people: "peopleTab", settings: "settingsTab" };
+    people: "peopleTab", settings: "settingsTab", calendar: "calendarTab" };
   for (const [tab, id] of Object.entries(panes)) $(id).classList.toggle("hidden", state.tab !== tab || viewingAny);
   $("queueTab").classList.toggle("hidden", !state.viewing);
   $("machineTab").classList.toggle("hidden", !state.viewingMachine);
@@ -296,6 +300,7 @@ function render() {
   else if (state.tab === "machines") renderAdminMachines();
   else if (state.tab === "people") renderPeople();
   else if (state.tab === "settings") renderSettings();
+  else if (state.tab === "calendar") renderCalendar();
   else renderAll();
 }
 
@@ -356,7 +361,7 @@ function statusBadge(r) {
   const note = r.status_note && r.status_note !== "scheduled" ? ` · ${r.status_note}` : (r.status_note === "scheduled" ? " · scheduled" : "");
   return el("span", { class: "badge " + (r.on_duty ? "active" : "inactive"), text: (r.on_duty ? "Active" : "Inactive") + note });
 }
-const overridden = (r) => !!r.status_note && r.status_note !== "scheduled";   // today's add-on is set
+const overridden = (r) => !!r.status_note && !["scheduled", "day off", "holiday"].includes(r.status_note);   // today's add-on is set
 const statusText = (r) => (r.on_duty ? "Active" : "Inactive") + (overridden(r) ? ` · ${r.status_note}` : " · by schedule");
 function askStatus(name, hasOverride = false) {
   return new Promise((resolve) => {
@@ -545,6 +550,8 @@ function applyTabs() {
   $("tabFaults").classList.toggle("hidden", !(machinesOn && isStaff()));
   $("tabMachines").classList.toggle("hidden", !(machinesOn && isAdmin()));
   $("tabPeople").classList.toggle("hidden", !isAdmin());
+  // the clinic calendar: a tab for residents and admins; plain instructors reach it from the LINE menu link
+  $("tabCalendar").classList.toggle("hidden", !(machineTabsForMe() || isAdmin()) && state.tab !== "calendar");
   if (["faults", "machines", "people"].includes(state.tab) && !isAdmin() && !(state.tab === "faults" && isStaff())) state.tab = "mine";
 }
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
@@ -684,6 +691,488 @@ function summaryFields(prefix, { email, freq, scope, admin }) {
     el("p", { class: "hint", text: "Optional. Used only to send you your summary. Only you and admins can see it." }), scopeBox);
   return { node, sync, read: () => ({ email: e.value.trim(), freq: f.value, scope: admin() && f.value !== "none" ? sc.value : "own" }) };
 }
+// ---------- calendars: planned days off / limited days (instructor themself, or an admin for any instructor) ----------
+const fmtDay = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+const SESSION_LABEL = { all: "whole day", AM: "morning", PM: "afternoon" };
+const bkkToday = () => new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
+const isoOf = (y, m, d) => new Date(Date.UTC(y, m, d)).toISOString().slice(0, 10);       // m 0-based; overflow rolls over
+const dm = (iso) => `${+iso.slice(8, 10)}/${+iso.slice(5, 7)}`;                            // 2/12 = 2 December
+const monthTitle = (y, m) => new Date(Date.UTC(y, m, 1)).toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
+const monthRange = (y, m) => [isoOf(y, m, 1), isoOf(y, m + 1, 0)];
+const hhmm = (t) => (t ? String(t).slice(0, 5) : "");
+function monthWeeks(y, m) {                       // rows of Mon–Fri dates (null = not in this month)
+  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate(), rows = [];
+  let row = null;
+  for (let d = 1; d <= last; d++) {
+    const dow = new Date(Date.UTC(y, m, d)).getUTCDay();
+    if (dow === 0 || dow === 6) continue;
+    if (!row || dow === 1) { row = [null, null, null, null, null]; rows.push(row); }
+    row[dow - 1] = isoOf(y, m, d);
+  }
+  return rows;
+}
+function byDay(rows) {                            // iso -> { AM: {state, note}, PM: {…} }
+  const m = new Map();
+  for (const r of rows) { if (!m.has(r.day)) m.set(r.day, {}); m.get(r.day)[r.session] = { state: r.state, note: r.time_note }; }
+  return m;
+}
+function monthNav(cal, reload) {
+  const now = bkkToday(), y0 = +now.slice(0, 4), m0 = +now.slice(5, 7) - 1;
+  const idx = (cal.y - y0) * 12 + (cal.m - m0);
+  const go = (n) => { const d = new Date(Date.UTC(cal.y, cal.m + n, 1)); cal.y = d.getUTCFullYear(); cal.m = d.getUTCMonth(); reload(); };
+  return el("div", { class: "cal-nav" },
+    el("button", { class: "ghost small", type: "button", "aria-label": "Previous month", disabled: idx <= 0, onclick: () => go(-1) }, "‹"),
+    el("h3", { text: monthTitle(cal.y, cal.m) }),
+    el("button", { class: "ghost small", type: "button", "aria-label": "Next month", disabled: idx >= 12, onclick: () => go(1) }, "›"));
+}
+const halfLabel = (h) => !h ? "" : h.state === "off" ? "✗" : h.state === "limited" ? "½" : "✓";
+function calGrid(cal, cell) {
+  const g = el("div", { class: "cal" }, ...DAYS.map((d) => el("div", { class: "dow", text: d })));
+  for (const row of monthWeeks(cal.y, cal.m)) for (const iso of row) g.append(iso ? cell(iso) : el("div", { class: "cal-empty" }));
+  return g;
+}
+const calLegend = () => el("div", { class: "legend" },
+  el("span", {}, el("span", { class: "half in", text: "✓" }), "In clinic"), el("span", {}, el("span", { class: "half limited", text: "½" }), "Part of the session"),
+  el("span", {}, el("span", { class: "half off", text: "✗" }), "Off"), calLegendHoliday());
+
+async function loadHolidays(a, b) { return new Map(((await rpc("list_holidays", { p_from: a, p_to: b })) || []).map((h) => [h.day, h.name])); }
+const calLegendHoliday = () => el("span", {}, el("span", { class: "half hol", text: "H" }), "Holiday");
+// one instructor's month: green = usual clinic sessions; tap a date to mark it off or limit the hours
+function instructorCalendar(userId, prefix, onChange) {
+  const uid = userId || state.profile.user_id;
+  const now = bkkToday();
+  const cal = { y: +now.slice(0, 4), m: +now.slice(5, 7) - 1, days: new Map(), hol: new Map() };
+  const wrap = el("div", { class: "inst-cal", id: `${prefix}Cal` });
+  const draw = () => {
+    wrap.replaceChildren(monthNav(cal, load), calLegend(), calGrid(cal, (iso) => {
+      const d = cal.days.get(iso) || {}, past = iso < now;
+      const lim = d.AM?.state === "limited" ? d.AM : d.PM?.state === "limited" ? d.PM : null;
+      const say = (k, w) => (d[k] ? `${w} ${d[k].state === "in" ? "in clinic" : d[k].state === "off" ? "off" : d[k].note}` : `${w} not scheduled`);
+      const hol = cal.hol.get(iso);
+      return el("button", { class: "cal-day" + (iso === now ? " today" : "") + (hol ? " holiday" : ""), type: "button", disabled: past, "data-day": iso, title: hol || "",
+        "aria-label": `${fmtDay(iso)}: ${say("AM", "morning")}, ${say("PM", "afternoon")}`, onclick: () => { if (!state.busy) editDay(iso, d); } },
+        el("span", { class: "num", text: String(+iso.slice(8, 10)) }),
+        el("span", { class: "halves" }, ...["AM", "PM"].map((k) => el("span", { class: "half " + (d[k]?.state || "none"), text: halfLabel(d[k]) }))),
+        lim ? el("span", { class: "tnote", text: lim.note }) : hol ? el("span", { class: "hnote", text: "Holiday" }) : null);
+    }), el("p", { class: "hint", text: "Tap a date to mark it off, or to be in clinic only before / after / between certain times. Left half = morning, right half = afternoon." }));
+  };
+  async function load() {
+    try {
+      const [a, b] = monthRange(cal.y, cal.m);
+      const [rows, hol] = await Promise.all([rpc("get_clinic_calendar", { p_from: a, p_to: b, p_user_id: uid }), loadHolidays(a, b)]);
+      cal.days = byDay(rows || []); cal.hol = hol;
+    } catch (e) { banner(friendly(e), "error"); }
+    draw();
+  }
+  async function editDay(iso, d) {
+    const v = await askDay(iso, d);
+    if (!v) return;
+    act(async () => {
+      await rpc("clear_day_off", { p_user_id: userId, p_day: iso, p_session: "all" });
+      if (v.mode.startsWith("in_")) await rpc("add_clinic_day", { p_user_id: userId, p_day: iso, p_session: v.mode.slice(3) });
+      else if (v.mode.startsWith("off_")) await rpc("add_day_off", { p_user_id: userId, p_from: iso, p_to: iso, p_session: v.mode.slice(4), p_note: v.note });
+      else if (v.mode !== "schedule") await rpc("add_day_off", { p_user_id: userId, p_from: iso, p_to: iso, p_session: "all", p_note: v.note,
+        p_from_time: v.mode === "until" ? null : v.time, p_until_time: v.mode === "until" ? v.time : v.mode === "between" ? v.until : null });
+      await load(); if (onChange) await onChange();
+    }, v.mode === "schedule" ? `${fmtDay(iso)}: back to the usual schedule.` : `${fmtDay(iso)} saved.`);
+  }
+  draw(); load();
+  return { node: wrap, reload: load };
+}
+function askDay(iso, d) {
+  return new Promise((resolve) => {
+    const dlg = $("dayDialog"), t = $("dayTime"), u = $("dayUntilTime");
+    $("dayTitle").textContent = fmtDay(iso);
+    for (const sel of [t, u]) if (!sel.options.length) for (let h = 7; h <= 18; h++) for (const m of [0, 15, 30, 45]) {
+      const v = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`; sel.append(el("option", { value: v, text: v })); }
+    t.value = "10:00"; u.value = "12:00"; $("dayNote").value = "";
+    // preselect what the date currently shows
+    const lim = d.AM?.state === "limited" ? d.AM : d.PM?.state === "limited" ? d.PM : null;
+    let mode = "schedule";
+    if (lim) {
+      const n = lim.note || "", mm = n.match(/\d\d:\d\d/g) || [];
+      mode = n.startsWith("until") ? "until" : n.startsWith("from") ? "from" : "between";
+      if (mm[0]) t.value = mm[0]; if (mm[1]) u.value = mm[1];
+    } else if (d.AM?.state === "off" && d.PM?.state === "off") mode = "off_all";
+    else if (d.AM?.state === "off") mode = "off_AM";
+    else if (d.PM?.state === "off") mode = "off_PM";
+    dlg.querySelector(`input[name=dayMode][value="${mode}"]`).checked = true;
+    const sync = () => {
+      const m = dlg.querySelector("input[name=dayMode]:checked").value, between = m === "between";
+      $("dayTimeBox").classList.toggle("hidden", !["until", "from", "between"].includes(m));
+      $("dayTimeLabel").textContent = between ? "From" : m === "until" ? "Until" : "From";
+      $("dayUntilBox").classList.toggle("hidden", !between);
+      $("dayNoteBox").classList.toggle("hidden", m === "schedule" || m.startsWith("in_"));
+    };
+    for (const r of dlg.querySelectorAll("input[name=dayMode]")) r.onchange = sync; sync();
+    dlg.onclose = () => {
+      if (dlg.returnValue !== "ok") return resolve(null);
+      const m = dlg.querySelector("input[name=dayMode]:checked").value;
+      if (m === "between" && u.value <= t.value) { banner("The end time must be after the start time.", "error"); return resolve(null); }
+      const note = $("dayNote").value.replace(/\s+/g, " ").trim();
+      if (note.length > 60 || /[<>]/.test(note)) { banner(MESSAGES.invalid_days_off, "error"); return resolve(null); }
+      resolve({ mode: m, time: t.value, until: u.value, note: note || null });
+    };
+    dlg.showModal();
+  });
+}
+function daysOffSection(userId, prefix) {
+  const wrap = el("div", { class: "days-off", id: `${prefix}DaysOff` });
+  const today = bkkToday();
+  const from = el("input", { type: "date", id: `${prefix}OffFrom`, min: today }); from.value = today;
+  const to = el("input", { type: "date", id: `${prefix}OffTo`, min: today }); to.value = today;
+  from.addEventListener("change", () => { if (to.value < from.value) to.value = from.value; to.min = from.value; });
+  const sess = el("select", { id: `${prefix}OffSession`, "aria-label": "Which part of the day" },
+    ...Object.entries(SESSION_LABEL).map(([v, t]) => el("option", { value: v, text: t[0].toUpperCase() + t.slice(1) })));
+  const note = el("input", { type: "text", id: `${prefix}OffNote`, maxlength: "60", placeholder: "Reason (optional), e.g. conference" });
+  const list = el("ul", { class: "list compact" });
+  let calendar = null;
+  const what = (d) => d.kind === "extra" ? "Extra clinic day · " + SESSION_LABEL[d.session] : d.kind === "limited"
+    ? "In clinic only " + (d.from_time && d.until_time ? `${hhmm(d.from_time)}–${hhmm(d.until_time)}` : d.until_time ? `until ${hhmm(d.until_time)}` : `from ${hhmm(d.from_time)}`)
+    : "Off · " + SESSION_LABEL[d.session];
+  const loadList = async () => {
+    try {
+      const rows = (await rpc("list_days_off", { p_user_id: userId })) || [];
+      list.replaceChildren(...(rows.length ? rows.map((d) => el("li", { class: "item" },
+        el("div", { class: "main" }, el("div", { class: "name", text: d.day_from === d.day_to ? fmtDay(d.day_from) : `${fmtDay(d.day_from)} – ${fmtDay(d.day_to)}` }),
+          el("div", { class: "meta", text: what(d) + (d.note ? ` · ${d.note}` : "") + (d.set_by ? ` · set by ${d.set_by}` : "") })),
+        el("button", { class: "ghost small", type: "button", onclick: () => act(async () => {
+          await rpc("remove_day_off", { p_day_off_id: d.day_off_id }); await loadList(); await calendar.reload(); }, "Removed.") }, "Remove")))
+        : [el("li", { class: "empty", text: "No days off planned." })]));
+    } catch (e) { banner(friendly(e), "error"); }
+  };
+  calendar = instructorCalendar(userId, prefix, loadList);
+  wrap.append(el("label", { text: "Clinic calendar" }), calendar.node,
+    el("div", { class: "section-title", text: "Planned changes" }), list,
+    el("details", { class: "range-add" }, el("summary", { text: "Add several days off at once" }),
+      el("div", { class: "row" }, el("label", { for: `${prefix}OffFrom`, text: "From" }), from, el("label", { for: `${prefix}OffTo`, text: "To" }), to),
+      sess, note,
+      el("div", { class: "row end" }, el("button", { class: "ghost", type: "button", id: `${prefix}OffAdd`, onclick: () => {
+        if (!from.value || !to.value || to.value < from.value) { banner(MESSAGES.invalid_days_off, "error"); return; }
+        act(async () => {
+          await rpc("add_day_off", { p_user_id: userId, p_from: from.value, p_to: to.value, p_session: sess.value, p_note: note.value.trim() || null });
+          note.value = ""; await loadList(); await calendar.reload();
+        }, "Days off added.");
+      } }, "Add days off"))));
+  loadList();
+  return wrap;
+}
+
+// ---------- clinic calendar for everyone (#calendar): who is in / off, no reasons ----------
+const clinicCal = { y: null, m: null, rows: [], hol: new Map(), loadedKey: "", selected: null, summary: null };
+async function loadClinicCalendar(force = false) {
+  if (clinicCal.y === null) { const t = bkkToday(); clinicCal.y = +t.slice(0, 4); clinicCal.m = +t.slice(5, 7) - 1; clinicCal.selected = t; }
+  const [a, b] = monthRange(clinicCal.y, clinicCal.m), key = a;
+  if (!force && clinicCal.loadedKey === key && Date.now() - (clinicCal.at || 0) < 50000) return;
+  const [rows, hol] = await Promise.all([rpc("get_clinic_calendar", { p_from: a, p_to: b }), loadHolidays(a, b)]);
+  clinicCal.rows = rows || []; clinicCal.hol = hol;
+  clinicCal.loadedKey = key; clinicCal.at = Date.now();
+}
+const calFilter = (r) => state.instFilter === "all" || (r.instructor_kind || "internal") === state.instFilter;
+function renderCalendar() {
+  const box = $("calendarTab");
+  const keepSummary = box.querySelector("#calSummaryText");
+  box.replaceChildren();
+  if (clinicCal.y === null) { box.append(el("p", { class: "empty", text: "Loading…" })); return; }
+  const seg = el("div", { class: "seg", role: "group", "aria-label": "Show instructors" });
+  for (const [k, label] of [["all", "All"], ["internal", "Internal"], ["external", "External"]])
+    seg.append(el("button", { type: "button", "aria-pressed": String(state.instFilter === k), onclick: () => { state.instFilter = k; clinicCal.summary = null; render(); } }, label));
+  const rows = clinicCal.rows.filter(calFilter);
+  const per = new Map();      // iso -> {in:Set, off:Set}
+  for (const r of rows) {
+    if (!per.has(r.day)) per.set(r.day, { in: new Set(), off: new Set() });
+    per.get(r.day)[r.state === "off" ? "off" : "in"].add(r.user_id);
+  }
+  const now = bkkToday();
+  const grid = calGrid(clinicCal, (iso) => {
+    const p = per.get(iso), nIn = p ? p.in.size : 0, nOff = p ? [...p.off].filter((u) => !p.in.has(u)).length : 0;
+    const hol = clinicCal.hol.get(iso);
+    return el("button", { class: "cal-day" + (iso === now ? " today" : "") + (iso === clinicCal.selected ? " sel" : "") + (hol ? " holiday" : ""), type: "button", "data-day": iso, title: hol || "",
+      "aria-label": `${fmtDay(iso)}: ${nIn} in clinic, ${nOff} off`, onclick: () => { clinicCal.selected = iso; render(); } },
+      el("span", { class: "num", text: String(+iso.slice(8, 10)) }),
+      hol ? el("span", { class: "hnote", text: "Holiday" }) : null,
+      nIn ? el("span", { class: "cnt in", text: `✓${nIn}` }) : null, nOff ? el("span", { class: "cnt off", text: `✗${nOff}` }) : null);
+  });
+  box.append(el("div", { class: "card" }, el("h2", { text: "Clinic calendar" }), seg,
+    monthNav(clinicCal, () => { clinicCal.selected = null; render(); loadClinicCalendar(true).then(render).catch((e) => banner(friendly(e), "error")); }),
+    grid, el("p", { class: "hint", text: "✓ instructors in clinic · ✗ usual clinic day marked off · Holiday = no usual clinic. Tap a date for names." })));
+  if (clinicCal.selected && clinicCal.selected.slice(0, 7) === isoOf(clinicCal.y, clinicCal.m, 1).slice(0, 7)) box.append(dayDetail(clinicCal.selected, rows));
+  if (isAdmin()) box.append(summaryCard(keepSummary), importCard(), holidaysCard());
+}
+function dayDetail(iso, rows) {
+  const card = el("div", { class: "card", id: "calDay" }, el("h2", { text: fmtDay(iso) }),
+    clinicCal.hol.get(iso) ? el("p", { class: "holiday-line", text: "Holiday: " + clinicCal.hol.get(iso) }) : null);
+  for (const [code, word] of [["AM", "Morning"], ["PM", "Afternoon"]]) {
+    const rs = rows.filter((r) => r.day === iso && r.session === code)
+      .sort((a, b) => (a.state === "off") - (b.state === "off") || a.instructor_name.localeCompare(b.instructor_name));
+    card.append(el("div", { class: "section-title", text: word }));
+    card.append(rs.length ? el("ul", { class: "list compact" }, ...rs.map((r) => el("li", { class: "item cal-person " + r.state },
+      el("span", { class: "mark", text: r.state === "off" ? "✗" : r.state === "limited" ? "½" : "✓" }),
+      el("div", { class: "main" }, el("div", { class: "name" }, r.instructor_name, r.instructor_kind === "external" ? el("span", { class: "badge", text: "external" }) : null),
+        el("div", { class: "meta", text: r.state === "off" ? "Off" : r.state === "limited" ? `Only ${r.time_note}` : "In clinic" })))))
+      : el("p", { class: "empty", text: "No one scheduled." }));
+  }
+  return card;
+}
+// "Dr Bee: ✓ 2/12, 4/12 (until 10:00) ✗ 11/12" for this month (from today) and next month
+function buildSummary(rows, fromIso, toIso, hol = new Map()) {
+  const people = new Map();
+  for (const r of rows.filter(calFilter)) {
+    if (!people.has(r.user_id)) people.set(r.user_id, { name: r.instructor_name, kind: r.instructor_kind || "internal", days: new Map() });
+    const d = people.get(r.user_id).days; if (!d.has(r.day)) d.set(r.day, {}); d.get(r.day)[r.session] = r;
+  }
+  const line = (p) => {
+    const yes = [], no = [];
+    for (const day of [...p.days.keys()].sort()) {
+      const s = p.days.get(day), lim = s.AM?.state === "limited" ? s.AM : s.PM?.state === "limited" ? s.PM : null;
+      if (lim) { yes.push(`${dm(day)} (${lim.time_note})`); continue; }
+      const inn = ["AM", "PM"].filter((k) => s[k] && s[k].state !== "off"), off = ["AM", "PM"].filter((k) => s[k]?.state === "off");
+      if (inn.length) yes.push(dm(day) + (inn.length === 1 ? ` ${inn[0]}` : ""));
+      if (off.length) no.push(dm(day) + (off.length === 1 ? ` ${off[0]}` : ""));
+    }
+    return `${p.name}: ` + [yes.length ? "✓ " + yes.join(", ") : "", no.length ? "✗ " + no.join(", ") : ""].filter(Boolean).join(" ");
+  };
+  const list = [...people.values()].sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+  const out = [`Clinic calendar ${dm(fromIso)} – ${dm(toIso)}`, "✓ in clinic · ✗ off (AM/PM = that half only)"];
+  for (const kind of ["internal", "external"]) {
+    const ps = list.filter((p) => p.kind === kind);
+    if (!ps.length) continue;
+    if (state.instFilter === "all") out.push("", kind === "internal" ? "Internal" : "External");
+    else out.push("");
+    out.push(...ps.map(line));
+  }
+  if (hol.size) out.push("", "Holidays: " + [...hol.keys()].sort().map(dm).join(", "));
+  if (!list.length) out.push("", "No instructors scheduled.");
+  return out.join("\n");
+}
+// ---------- paste a message to update the calendar (admins): "Dr Bee: ✗ 12/12, 14/12 AM, 16/12 until 10:00" ----------
+const normName = (n) => String(n || "").toLowerCase().replace(/^\s*(dr\.?|ทพ\.?|ทพญ\.?|อ\.|อาจารย์|aj\.?|ajarn)\s*/i, "").replace(/[^\p{L}\p{N}]+/gu, "");
+function matchInstructor(name, people) {
+  const k = normName(name);
+  if (!k) return null;
+  const exact = people.filter((p) => normName(p.display_name) === k);
+  if (exact.length === 1) return exact[0];
+  const part = people.filter((p) => { const n = normName(p.display_name); return n.startsWith(k) || k.startsWith(n); });
+  return part.length === 1 ? part[0] : null;
+}
+function parseTime(t) {
+  const m = String(t).trim().match(/^(\d{1,2})(?:[:.](\d{2}))?$/);
+  if (!m || +m[1] > 23 || +(m[2] || 0) > 59) return null;
+  return `${m[1].padStart(2, "0")}:${m[2] || "00"}`;
+}
+function parseDate(d, today) {        // "12/12" or "12/12/2026" (day/month); without a year: the next such date from today
+  const m = String(d).match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
+  if (!m) return null;
+  const day = +m[1], mon = +m[2];
+  let y = m[3] ? (+m[3] < 100 ? 2000 + +m[3] : +m[3]) : +today.slice(0, 4);
+  if (y > 2500) y -= 543;                                 // Buddhist year
+  const ok = (yy) => { const iso = isoOf(yy, mon - 1, day); return +iso.slice(5, 7) === mon && +iso.slice(8, 10) === day ? iso : null; };
+  let iso = ok(y);
+  if (iso && !m[3] && iso < today) iso = ok(y + 1);
+  return iso;
+}
+// Reads lines into per-person intents. A line with any ✓ is an exact list for the month(s) it mentions:
+// listed dates = in clinic, every other date of those months = not in. A line with only ✗ = off on those dates,
+// the rest of those months back to the usual schedule.
+function parseCalendarText(text, people, today) {
+  const persons = new Map(), problems = [];
+  for (const raw of String(text).split(/\n/)) {
+    const line = raw.trim();
+    const c = line.match(/^([^:：]{1,60})[:：](.*)$/);
+    if (!c || !/\d{1,2}\/\d{1,2}/.test(c[2])) continue;      // headings and notes are skipped
+    const who = matchInstructor(c[1], people);
+    if (!who) { problems.push(`Name not found (or matches more than one): "${c[1].trim()}"`); continue; }
+    const P = persons.get(who.user_id) || { user: who.user_id, name: who.display_name, exact: false, months: new Set(), days: new Map() };
+    persons.set(who.user_id, P);
+    let mode = "off";
+    const body = c[2].replace(/[✓✔☑]|✅/g, ",✓,").replace(/[✗✘×❌]/g, ",✗,").replace(/[()]/g, " ")
+      .replace(/(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s+(?=\d{1,2}\/\d{1,2})/g, "$1,");
+    for (let tok of body.split(/[,;]+/)) {
+      tok = tok.trim();
+      if (!tok) continue;
+      if (tok === "✓" || /^(in|ok|come)$/i.test(tok)) { mode = "in"; P.exact = true; continue; }
+      if (tok === "✗" || /^(x|off|no)$/i.test(tok)) { mode = "off"; continue; }
+      const m = tok.match(/^(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)(?:\s*[-–]\s*(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?))?\s*(.*)$/);
+      if (!m) { problems.push(`${who.display_name}: couldn't read "${tok}"`); continue; }
+      const d1 = parseDate(m[1], today), d2 = m[2] ? parseDate(m[2], d1 || today) : d1;
+      if (!d1 || !d2 || d2 < d1 || (Date.parse(d2) - Date.parse(d1)) / 864e5 > 120) { problems.push(`${who.display_name}: bad date "${tok}"`); continue; }
+      const rest = m[3].toLowerCase().trim();
+      let sess = ["AM", "PM"], from = null, until = null;
+      if (/^(am|morning|เช้า)$/.test(rest)) sess = ["AM"];
+      else if (/^(pm|afternoon|บ่าย)$/.test(rest)) sess = ["PM"];
+      else if (rest) {
+        const u = rest.match(/^(?:only\s+)?(?:until|before|till|ถึง|ก่อน)\s*([\d:.]+)$/), f = rest.match(/^(?:only\s+)?(?:from|after|หลัง|ตั้งแต่)\s*([\d:.]+)$/),
+          b = rest.match(/^(?:only\s+)?(?:from\s+)?([\d:.]+)\s*(?:[-–]|to|ถึง)\s*([\d:.]+)$/);
+        if (u) until = parseTime(u[1]); else if (f) from = parseTime(f[1]); else if (b) { from = parseTime(b[1]); until = parseTime(b[2]); }
+        if ((u && !until) || (f && !from) || (b && (!from || !until || until <= from)) || (!u && !f && !b)) {
+          problems.push(`${who.display_name}: couldn't read "${tok}"`); continue; }
+      }
+      for (let t = Date.parse(d1 + "T00:00:00Z"); t <= Date.parse(d2 + "T00:00:00Z"); t += 864e5) {
+        const day = new Date(t).toISOString().slice(0, 10), dow = new Date(t).getUTCDay();
+        if (dow === 0 || dow === 6) continue;
+        P.months.add(day.slice(0, 7));
+        if (day < today) { problems.push(`${who.display_name}: ${dm(day)} is in the past – skipped`); continue; }
+        const D = P.days.get(day) || { inS: new Set(), offS: new Set(), lim: null };
+        if (from || until) D.lim = { from, until };
+        else for (const k of sess) (mode === "in" ? D.inS : D.offS).add(k);
+        P.days.set(day, D);
+      }
+    }
+  }
+  return { persons: [...persons.values()], problems };
+}
+// usual(user, day) -> Set of scheduled sessions; hasRows(user, day) -> true if the date already has a planned change
+function planCalendarChanges(persons, usual, hasRows, today) {
+  const out = [];
+  const both = (set) => (set.size === 2 ? "all" : set.size ? [...set][0] : null);
+  for (const P of persons) {
+    const days = new Set(P.days.keys());
+    for (const ym of P.months) {                       // the rest of each mentioned month
+      const y = +ym.slice(0, 4), m = +ym.slice(5, 7) - 1, last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+      for (let d = 1; d <= last; d++) { const iso = isoOf(y, m, d), dow = new Date(Date.UTC(y, m, d)).getUTCDay();
+        if (dow !== 0 && dow !== 6 && iso >= today) days.add(iso); }
+    }
+    for (const day of [...days].sort()) {
+      const D = P.days.get(day), U = usual(P.user, day), had = hasRows(P.user, day);
+      let ch = null;
+      if (D?.lim) ch = { lim: D.lim, label: "in clinic only " + (D.lim.from && D.lim.until ? `${D.lim.from}–${D.lim.until}` : D.lim.until ? `until ${D.lim.until}` : `from ${D.lim.from}`) };
+      else {
+        const want = new Set(P.exact ? [...(D?.inS || [])].filter((k) => !D.offS.has(k)) : [...U].filter((k) => !(D?.offS || new Set()).has(k)));
+        const extra = new Set([...want].filter((k) => !U.has(k))), off = new Set([...U].filter((k) => !want.has(k)));
+        if (!extra.size && !off.size) { if (had) ch = { label: "usual schedule" }; }
+        else ch = { extra: both(extra), off: both(off),
+          label: want.size === 0 ? "off" : want.size === 2 ? "in clinic" : `in clinic ${[...want][0]} only` };
+        if (ch && extra.size) ch.label += " (extra day)";
+      }
+      if (ch) out.push({ user: P.user, name: P.name, day, ...ch });
+    }
+  }
+  return out;
+}
+function usualFromSchedule(rows) {        // weekly schedule rows -> (day) => Set of sessions
+  return (day) => {
+    const dt = new Date(day + "T00:00:00Z"), dow = dt.getUTCDay(), wk = Math.floor((dt.getUTCDate() - 1) / 7) + 1;
+    return new Set(rows.filter((r) => r.weekday === dow && (!r.weeks || r.weeks.includes(wk))).map((r) => r.session_code));
+  };
+}
+const importState = { text: "", preview: null };
+function importCard() {
+  const ta = el("textarea", { id: "calImportText", rows: "5", placeholder: "Dr Bee: ✗ 14/12, 15/12 AM\nDr Cat: ✓ 3/12, 10/12 until 10:00, 17/12\nDr Dee: ✗ 21/12-25/12" });
+  ta.value = importState.text;
+  ta.addEventListener("input", () => { importState.text = ta.value; importState.preview = null; $("calImportPreview")?.replaceChildren(); $("calImportApply")?.classList.add("hidden"); });
+  const prev = el("div", { id: "calImportPreview" });
+  const apply = el("button", { class: "primary hidden", type: "button", id: "calImportApply", disabled: state.busy, onclick: () => {
+    const ch = importState.preview?.changes || [];
+    if (!ch.length) return;
+    act(async () => {
+      for (const c of ch) {
+        await rpc("clear_day_off", { p_user_id: c.user, p_day: c.day, p_session: "all" });
+        if (c.lim) await rpc("add_day_off", { p_user_id: c.user, p_from: c.day, p_to: c.day, p_session: "all", p_note: null, p_from_time: c.lim.from, p_until_time: c.lim.until });
+        if (c.off) await rpc("add_day_off", { p_user_id: c.user, p_from: c.day, p_to: c.day, p_session: c.off, p_note: null });
+        if (c.extra) await rpc("add_clinic_day", { p_user_id: c.user, p_day: c.day, p_session: c.extra });
+      }
+      importState.text = ""; importState.preview = null; clinicCal.summary = null;
+      await loadClinicCalendar(true);
+    }, `Calendar updated: ${ch.length} change${ch.length === 1 ? "" : "s"}.`);
+  } }, "Apply");
+  const show = () => {
+    const pv = importState.preview;
+    if (!pv) return;
+    prev.replaceChildren(
+      pv.changes.length ? el("ul", { class: "list compact" }, ...pv.changes.map((c) => el("li", { class: "item" },
+        el("div", { class: "main" }, el("div", { class: "name", text: `${c.name} · ${fmtDay(c.day)}` }), el("div", { class: "meta", text: c.label })))))
+        : el("p", { class: "empty", text: "No dates found." }),
+      ...pv.problems.map((t) => el("p", { class: "warn", text: t })));
+    apply.textContent = `Apply ${pv.changes.length} change${pv.changes.length === 1 ? "" : "s"}`;
+    apply.classList.toggle("hidden", !pv.changes.length);
+  };
+  const check = el("button", { class: "ghost", type: "button", id: "calImportCheck", onclick: async () => {
+    try {
+      if (!state.people.length) await loadPeople();
+      const inst = state.people.filter((p) => p.role === "instructor" && p.active), today = bkkToday();
+      const { persons, problems } = parseCalendarText(ta.value, inst, today);
+      const usual = new Map(), rows = new Map();
+      await Promise.all(persons.map(async (P) => {
+        const [sch, offs] = await Promise.all([rpc("admin_get_schedule", { p_user_id: P.user }), rpc("list_days_off", { p_user_id: P.user })]);
+        usual.set(P.user, usualFromSchedule(sch || []));
+        rows.set(P.user, offs || []);
+      }));
+      const hol = await loadHolidays(today, isoOf(+today.slice(0, 4), +today.slice(5, 7) + 13, 0));
+      const changes = planCalendarChanges(persons, (u, d) => (hol.has(d) ? new Set() : usual.get(u)(d)),
+        (u, d) => rows.get(u).some((r) => d >= r.day_from && d <= r.day_to), today);
+      importState.preview = { changes, problems }; show();
+    } catch (e) { banner(friendly(e), "error"); }
+  } }, "Check");
+  show();
+  return el("div", { class: "card", id: "calImport" }, el("h2", { text: "Update from a message" }),
+    el("p", { class: "hint", text: "One line per instructor, dates as day/month. “Name: ✓ dates” = comes only on those dates that month (all other days off, extra days added). " +
+      "“Name: ✗ dates” = off on those dates, the rest of the month as usual. Add AM / PM for half a day, 15/12-18/12 for a range, " +
+      "“until 10:00”, “from 13:00” or “9:00-11:00” for part of a day. Check shows the changes before anything is saved." }),
+    ta, el("div", { class: "row end" }, check, apply), prev);
+}
+// ---------- holidays (admins) ----------
+const holState = { list: null, status: null };
+async function loadHolidayAdmin() {
+  const t = bkkToday();
+  const [list, st] = await Promise.all([rpc("list_holidays", { p_from: t, p_to: isoOf(+t.slice(0, 4) + 2, 0, 0) }), rpc("admin_holiday_sync_status")]);
+  holState.list = list || []; holState.status = st || {};
+}
+function holidaysCard() {
+  const card = el("div", { class: "card", id: "calHolidays" }, el("h2", { text: "Holidays" }),
+    el("p", { class: "hint", text: "No usual clinic on these days (instructors can still add an extra day). Thai public holidays are added automatically on the 1st of each month from the official holiday calendar; removing one keeps it removed." }));
+  if (!holState.list) {
+    card.append(el("p", { class: "empty", text: "Loading…" }));
+    loadHolidayAdmin().then(render).catch((e) => banner(friendly(e), "error"));
+    return card;
+  }
+  const st = holState.status || {};
+  card.append(el("p", { class: "meta", id: "holSyncStatus", text: st.pending ? "Checking the online holiday calendar…" :
+    st.last_run_at ? `Last automatic check: ${new Date(st.last_run_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "Asia/Bangkok" })}` +
+      (st.last_error ? " (couldn't reach it, will retry next month)" : ` · ${st.last_added || 0} added`) : "Not checked yet." }));
+  card.append(el("ul", { class: "list compact", id: "holList" }, ...(holState.list.length ? holState.list.map((h) => el("li", { class: "item" },
+    el("div", { class: "main" }, el("div", { class: "name", text: fmtDay(h.day) + " " + h.day.slice(0, 4) }),
+      el("div", { class: "meta", text: h.name + (h.source === "thai" ? " · Thai public holiday" : "") })),
+    el("button", { class: "ghost small", type: "button", disabled: state.busy, onclick: () => act(async () => {
+      await rpc("admin_remove_holiday", { p_day: h.day }); await loadHolidayAdmin(); await loadClinicCalendar(true); }, "Holiday removed.") }, "Remove")))
+    : [el("li", { class: "empty", text: "No holidays added yet." })])));
+  const d = el("input", { type: "date", id: "holDate", min: bkkToday() });
+  const n = el("input", { type: "text", id: "holName", maxlength: "60", placeholder: "Name, e.g. Faculty anniversary" });
+  card.append(el("div", { class: "section-title", text: "Add another holiday" }), d, n,
+    el("div", { class: "row end" },
+      el("button", { class: "ghost", type: "button", id: "holThai", disabled: state.busy, onclick: () => act(async () => {
+        const r = await rpc("admin_add_thai_holidays"); await loadHolidayAdmin(); await loadClinicCalendar(true);
+        banner(`${r?.added ?? 0} Thai public holidays added. Also checking the online calendar for any new ones.`, "ok"); }) }, "Add Thai public holidays now"),
+      el("button", { class: "primary", type: "button", id: "holAdd", disabled: state.busy, onclick: () => {
+        const nm = n.value.replace(/\s+/g, " ").trim();
+        if (!d.value || !nm || nm.length > 60 || /[<>]/.test(nm)) { banner(MESSAGES.invalid_holiday, "error"); return; }
+        act(async () => { await rpc("admin_add_holiday", { p_day: d.value, p_name: nm }); await loadHolidayAdmin(); await loadClinicCalendar(true); }, "Holiday added.");
+      } }, "Add")));
+  return card;
+}
+function summaryCard(keep) {
+  const ta = el("textarea", { id: "calSummaryText", readonly: true, rows: "10" });
+  const card = el("div", { class: "card", id: "calSummary" }, el("h2", { text: "Summary message" }),
+    el("p", { class: "hint", text: "This month (from today) and next month, for all instructors shown above. Times show limited days." }));
+  const make = el("button", { class: "primary", type: "button", id: "calSummaryMake", disabled: state.busy, onclick: async () => {
+    try {
+      const t = bkkToday(), y = +t.slice(0, 4), m = +t.slice(5, 7) - 1, end = isoOf(y, m + 2, 0);
+      const [rows, hol] = await Promise.all([rpc("get_clinic_calendar", { p_from: t, p_to: end }), loadHolidays(t, end)]);
+      clinicCal.summary = buildSummary(rows || [], t, end, hol); render();
+    } catch (e) { banner(friendly(e), "error"); }
+  } }, clinicCal.summary ? "Make again" : "Make summary");
+  card.append(el("div", { class: "row" }, make));
+  if (clinicCal.summary) {
+    ta.value = clinicCal.summary;
+    if (keep) ta.scrollTop = keep.scrollTop;
+    card.append(ta, el("div", { class: "row end" },
+      el("button", { class: "ghost", type: "button", id: "calSummaryCopy", onclick: async () => {
+        try { await navigator.clipboard.writeText(clinicCal.summary); banner("Copied.", "ok"); }
+        catch { ta.select(); document.execCommand?.("copy"); banner("Copied.", "ok"); }
+      } }, "Copy"),
+      el("a", { class: "button primary", id: "calSummaryLine", href: "https://line.me/R/share?text=" + encodeURIComponent(clinicCal.summary), target: "_blank", rel: "noopener" }, "Send in LINE")));
+  }
+  return card;
+}
 function renderSettings() {
   const box = $("settingsTab");
   if (state.schedule === null) { settingsCard = null; box.replaceChildren(el("p", { class: "empty", text: "Loading…" })); return; }
@@ -715,7 +1204,8 @@ function renderSettings() {
       settingsCard = null; applyTabs();
     }, "Settings saved.");
   });
-  settingsCard = el("div", { class: "card" }, el("h2", { text: "Settings" }), form);
+  settingsCard = el("div", { class: "card" }, el("h2", { text: "Settings" }), form,
+    state.profile.role === "instructor" ? daysOffSection(null, "set") : null);
   box.append(settingsCard);
 }
 function describeChange(c) {
@@ -769,9 +1259,10 @@ function personEditor(u) {
   }).catch((e) => banner(friendly(e), "error"));
   const sum = summaryFields("p", { email: u.email, freq: u.summary_frequency, scope: u.summary_scope, admin: () => adm.checked });
   adm.addEventListener("change", sum.sync);
+  const offBox = u.role === "instructor" ? daysOffSection(u.user_id, "p") : null;
   box.append(el("label", { for: "pName", text: "Name" }), name, el("label", { for: "pRole", text: "Role" }), role,
     el("label", { class: "choice", for: "pAdmin" }, adm, " Admin"),
-    el("label", { class: "choice", for: "pActive" }, act_, " Account enabled"), schedWrap, sum.node,
+    el("label", { class: "choice", for: "pActive" }, act_, " Account enabled"), schedWrap, offBox, sum.node,
     el("div", { class: "row end" }, el("button", { class: "primary", type: "button", disabled: state.busy, onclick: () => {
       const [r, k] = role.value.split(":");
       const nm = name.value.replace(/\s+/g, " ").trim();
@@ -1147,7 +1638,22 @@ function renderAdminMachines() {
 }
 
 // ---------- start-up ----------
+const VIEWS = ["calendar", "mine", "all", "scanners", "printers"];
+function wantedView() {
+  const v = new URLSearchParams(location.search).get("view") || location.hash.replace(/^#/, "");
+  if (VIEWS.includes(v)) { try { sessionStorage.setItem("ocq_view", v); } catch {} return v; }
+  try { return sessionStorage.getItem("ocq_view"); } catch { return null; }
+}
+function applyWantedView() {
+  const v = wantedView();
+  try { sessionStorage.removeItem("ocq_view"); } catch {}
+  if (!v) return;
+  if (["scanners", "printers"].includes(v) && !machineTabsForMe()) return;
+  state.tab = v; state.viewing = null; state.viewingMachine = null;
+}
 async function start() {
+  wantedView();      // remember a menu link's view before any sign-in redirect
+  window.addEventListener("hashchange", () => { if (state.profile) { applyWantedView(); applyTabs(); syncChannels(); render(); refreshAll(); } });
   $("envLabel").textContent = C.environmentLabel || "";
   $("tabScanners").classList.add("hidden"); $("tabPrinters").classList.add("hidden");   // shown by applyTabs once we know the role
   $("lineLoginBtn").onclick = async () => {
@@ -1176,6 +1682,7 @@ async function enterApp(profile) {
   state.profile = profile;
   await ensurePrivacyAck();
   if (state.profile.role === "admin") state.tab = "all";
+  applyWantedView();
   applyTabs();
   show("mainView");
   await recoverPendingJoin();
