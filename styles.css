@@ -160,3 +160,12 @@ li.editor { display: flex; flex-direction: column; gap: 8px; }
 .summary-box { margin-top: 14px; padding-top: 10px; border-top: 1px solid #e5e7eb; }
 .summary-box label { display: block; margin-top: 10px; font-weight: 600; }
 .purpose { font-size: 16px; font-weight: 600; color: #1f2937; margin-top: 2px; }
+.who button.gear { margin-left: auto; width: 40px; height: 40px; border-radius: 50%; border: 1px solid #e5e7eb; background: #fff;
+  font-size: 20px; line-height: 1; padding: 0; color: #374151; }
+
+.my-status { margin: 6px 0 4px; }
+.status-chip { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px; font-size: 16px; font-weight: 600; border: 0; }
+.status-chip.active { background: #e3f6ea; color: #137a3a; }
+.status-chip.inactive { background: #eef0f2; color: #4b5563; }
+.status-chip .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
+.status-chip .chev { font-weight: 500; font-size: 14px; opacity: .75; margin-left: 4px; }

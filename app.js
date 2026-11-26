@@ -141,6 +141,7 @@ async function loadSession() { const rows = (await rpc("get_current_clinic_sessi
 async function loadQueue(resourceId) { state.queues.set(resourceId, (await rpc("get_queue", { p_resource_id: resourceId })) || []); }
 
 async function loadMachines() {
+  if (!machineTabsForMe()) { state.machines = []; return; }   // plain instructors: no machine data needed
   const [sc, pr] = await Promise.all([
     scannersOn() ? rpc("get_machine_overview", { p_resource_type: "scanner" }) : [],
     printersOn() ? rpc("get_machine_overview", { p_resource_type: "printer" }) : []]);
@@ -263,8 +264,15 @@ function render() {
   const p = state.profile;
   if (!p) return;
   $("whoLine").replaceChildren(el("span", { text: p.display_name }),
-    el("button", { class: "edit", type: "button", onclick: editName }, "Edit name"),
-    el("button", { class: "edit", type: "button", onclick: openSettings }, "Settings"));
+    el("button", { class: "gear", type: "button", onclick: openSettings, "aria-label": "Settings", title: "Settings", id: "settingsBtn" }, "⚙"));
+  // instructors: today's status right under their name, one tap to change it
+  const myRes = p.role === "instructor" ? state.overview.find((r) => r.is_my_resource) : null;
+  $("myStatusLine").classList.toggle("hidden", !myRes);
+  if (myRes) $("myStatusLine").replaceChildren(
+    el("button", { class: "status-chip " + (myRes.on_duty ? "active" : "inactive"), type: "button", id: "myStatusBtn", disabled: state.busy,
+      onclick: () => setStatus(myRes, true) },
+      el("span", { class: "dot" }), (myRes.on_duty ? "Active" : "Inactive") + (myRes.status_note ? ` · ${myRes.status_note}` : ""),
+      el("span", { class: "chev", text: "Change ›" })));
   const roleLabel = ({ resident: "Resident", instructor: p.instructor_kind === "external" ? "External instructor" : "Instructor",
     admin: "Admin", technician: "Technician" }[p.role] || p.role) + (p.is_admin && p.role !== "admin" ? " · Admin" : "");
   $("sessionLine").textContent = `${roleLabel} · ` + (state.session
@@ -434,7 +442,7 @@ function unitBig(n) {   // large, high-contrast unit number (easy to read at a g
 function renderQueueBlock(r) {
   const rows = state.queues.get(r.resource_id) || [];
   const isOwner = r.is_my_resource && state.profile.role === "instructor";
-  const canSet = isOwner || isAdmin();
+  const canSet = !isOwner && isAdmin();
   const wrap = el("div", { class: "card" }, el("h2", { text: r.resource_name }),
     el("div", { class: "row status-line" }, statusBadge(r),
       canSet ? el("button", { class: "ghost small", type: "button", disabled: state.busy, onclick: () => setStatus(r, isOwner) }, "Set status") : null),
@@ -522,8 +530,13 @@ async function editName() {
 }
 
 // ---------- accounts: setup, settings, schedule, people (admin) ----------
+// Plain instructors get a simple app: My Queue + Instructors only. Instructors who are admins see everything.
+const machineTabsForMe = () => state.profile?.role !== "instructor" || isAdmin();
 function applyTabs() {
   const machinesOn = scannersOn() || printersOn();
+  $("tabScanners").classList.toggle("hidden", !(scannersOn() && machineTabsForMe()));
+  $("tabPrinters").classList.toggle("hidden", !(printersOn() && machineTabsForMe()));
+  if (["scanners", "printers"].includes(state.tab) && !machineTabsForMe()) state.tab = "mine";
   $("tabFaults").classList.toggle("hidden", !(machinesOn && isStaff()));
   $("tabMachines").classList.toggle("hidden", !(machinesOn && isAdmin()));
   $("tabPeople").classList.toggle("hidden", !isAdmin());
@@ -672,6 +685,9 @@ function renderSettings() {
   if (settingsCard && box.contains(settingsCard)) return;
   box.replaceChildren();
   const { form, read } = accountForm({ profile: state.profile, schedule: state.schedule });
+  const nameIn = el("input", { type: "text", id: "setName", maxlength: "40", autocomplete: "nickname" }); nameIn.value = state.profile.display_name;
+  form.prepend(el("label", { for: "setName", text: "Your name or nickname" }), nameIn,
+    el("div", { class: "warn", text: "Your own name or nickname only. No patient names or HN." }));
   const sum = summaryFields("set", { email: state.profile.email, freq: state.profile.summary_frequency, scope: state.profile.summary_scope,
     admin: () => $("acctAdmin")?.checked });
   form.addEventListener("change", sum.sync);
@@ -680,9 +696,12 @@ function renderSettings() {
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
     const v = read(), c = sum.read();
+    const nm = nameIn.value.replace(/\s+/g, " ").trim();
+    if (!nm || nm.length > 40 || /[<>]/.test(nm)) { banner(MESSAGES.invalid_display_name, "error"); return; }
     if (!v.role) { banner(MESSAGES.invalid_role, "error"); return; }
     if (c.freq !== "none" && !c.email) { banner(MESSAGES.email_required_for_summary, "error"); return; }
     act(async () => {
+      if (nm !== state.profile.display_name) await rpc("set_my_display_name", { p_display_name: nm });
       await rpc("update_my_account", { p_role: v.role, p_instructor_kind: v.kind, p_is_admin: v.isAdmin });
       await rpc("update_my_contact", { p_email: c.email || null, p_summary_frequency: c.freq, p_summary_scope: c.scope });
       if (v.role === "instructor" && v.kind === "internal") await rpc("set_my_schedule", { p_slots: v.slots });
@@ -986,7 +1005,7 @@ function renderMachineView(id) {
       label: "Details (optional)", required: false, category: true });
     if (n) act(() => rpc("report_fault", { p_resource_id: id, p_category: n.category, p_note: n.note }), "Problem reported. Thank you.");
   } }, "Report a problem");
-  const useBtns = !isStaff() ? null : el("div", { class: "row" }, ...useButtons(id, m.resource_name, m.resource_status));
+  const useBtns = !isAdmin() ? null : el("div", { class: "row" }, ...useButtons(id, m.resource_name, m.resource_status));
   const card = el("div", { class: "card" },
     el("div", { class: "row", style: "justify-content:space-between" }, el("h2", {}, m.resource_name, machineBadge(m)), reportBtn),
     useBtns,
@@ -1125,8 +1144,7 @@ function renderAdminMachines() {
 // ---------- start-up ----------
 async function start() {
   $("envLabel").textContent = C.environmentLabel || "";
-  $("tabScanners").classList.toggle("hidden", !scannersOn());
-  $("tabPrinters").classList.toggle("hidden", !printersOn());
+  $("tabScanners").classList.add("hidden"); $("tabPrinters").classList.add("hidden");   // shown by applyTabs once we know the role
   $("lineLoginBtn").onclick = async () => {
     const { error } = await sb.auth.signInWithOAuth({ provider: C.lineProvider, options: { redirectTo: location.origin + location.pathname } });
     if (error) banner(friendly(error), "error");
