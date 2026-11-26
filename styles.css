@@ -215,3 +215,24 @@ details.range-add { margin-top: 10px; } details.range-add summary { cursor: poin
 .who { font-size: 10px; line-height: 12px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .halves.mini .half { height: 13px; line-height: 13px; font-size: 9px; border-radius: 3px; }
 .cal-day.holiday .who { color: var(--slate); }
+#calWho { margin: 4px 0 8px; }
+.day-list { display: flex; flex-direction: column; gap: 8px; }
+.day-block { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; }
+.day-block.today { border: 2px solid var(--slate); }
+.day-block.holiday { background: #f1f2f5; }
+.day-head { font-size: 15px; margin-bottom: 6px; }
+.linkish { background: none; border: 0; padding: 0; font-weight: 700; font-size: 15px; color: var(--ink); text-decoration: underline; }
+.inst-lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.inst-line { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 8px; }
+.inst-line .iname { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inst-line .pills { display: flex; gap: 4px; }
+.pill.half { display: inline-block; flex: none; width: auto; height: auto; padding: 3px 8px; font-size: 12px; line-height: 16px; border-radius: 8px; }
+.inst-line .tnote { grid-column: 1 / -1; font-size: 12px; }
+.empty.small { font-size: 13px; margin: 0; padding: 4px 0; }
+.import-table { width: 100%; border-collapse: separate; border-spacing: 0 6px; table-layout: fixed; }
+.import-table th { font-size: 12px; color: var(--muted); font-weight: 500; text-align: left; padding: 0 4px; }
+.import-table th:nth-child(1) { width: 30%; } .import-table th:nth-child(2) { width: 78px; }
+.import-table td { padding: 0 4px 0 0; vertical-align: middle; }
+.import-table .imp-name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-table select, .import-table input { padding: 10px 8px; font-size: 14px; border-radius: 12px; }
+.import-table tr.group td { font-size: 12px; font-weight: 600; color: var(--slate); padding-top: 6px; }

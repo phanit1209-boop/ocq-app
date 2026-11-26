@@ -860,65 +860,126 @@ function daysOffSection(userId, prefix) {
 }
 
 // ---------- clinic calendar for everyone (#calendar): who is in / off, no reasons ----------
-const clinicCal = { y: null, m: null, rows: [], hol: new Map(), loadedKey: "", selected: null, summary: null };
+// view: day / week / month; who: all instructors (filtered by Internal/External) or one instructor (resource id)
+const clinicCal = { view: "month", anchor: null, who: "all", rows: [], hol: new Map(), loadedKey: "", summary: null };
+const addDays = (iso, n) => new Date(Date.parse(iso + "T00:00:00Z") + n * 864e5).toISOString().slice(0, 10);
+const weekdayOf = (iso) => new Date(iso + "T00:00:00Z").getUTCDay();          // 0 Sun … 6 Sat
+const mondayOf = (iso) => { const d = weekdayOf(iso); return addDays(iso, d === 0 ? 1 : d === 6 ? 2 : 1 - d); };  // weekend -> next Monday
+function clinicRange() {
+  const t = clinicCal.anchor;
+  if (clinicCal.view === "day") return [t, t];
+  if (clinicCal.view === "week") { const m = mondayOf(t); return [m, addDays(m, 4)]; }
+  return monthRange(+t.slice(0, 4), +t.slice(5, 7) - 1);
+}
 async function loadClinicCalendar(force = false) {
-  if (clinicCal.y === null) { const t = bkkToday(); clinicCal.y = +t.slice(0, 4); clinicCal.m = +t.slice(5, 7) - 1; clinicCal.selected = t; }
-  const [a, b] = monthRange(clinicCal.y, clinicCal.m), key = a;
+  if (clinicCal.anchor === null) { let t = bkkToday(); if ([0, 6].includes(weekdayOf(t))) t = mondayOf(t); clinicCal.anchor = t; }
+  const [a, b] = clinicRange(), key = a + b;
   if (!force && clinicCal.loadedKey === key && Date.now() - (clinicCal.at || 0) < 50000) return;
   const [rows, hol] = await Promise.all([rpc("get_clinic_calendar", { p_from: a, p_to: b }), loadHolidays(a, b)]);
   clinicCal.rows = rows || []; clinicCal.hol = hol;
   clinicCal.loadedKey = key; clinicCal.at = Date.now();
 }
-const calFilter = (r) => state.instFilter === "all" || (r.instructor_kind || "internal") === state.instFilter;
+const calFilter = (r) => (clinicCal.who === "all" ? state.instFilter === "all" || (r.instructor_kind || "internal") === state.instFilter : r.resource_id === clinicCal.who);
+function clinicGo(fn) { fn(); render(); loadClinicCalendar(true).then(render).catch((e) => banner(friendly(e), "error")); }
+function clinicStep(n) {
+  clinicGo(() => {
+    const t = clinicCal.anchor;
+    if (clinicCal.view === "month") clinicCal.anchor = isoOf(+t.slice(0, 4), +t.slice(5, 7) - 1 + n, 1);
+    else if (clinicCal.view === "week") clinicCal.anchor = addDays(mondayOf(t), 7 * n);
+    else { let d = addDays(t, n); while ([0, 6].includes(weekdayOf(d))) d = addDays(d, n); clinicCal.anchor = d; }
+  });
+}
+function clinicTitle() {
+  const [a, b] = clinicRange();
+  if (clinicCal.view === "month") return monthTitle(+a.slice(0, 4), +a.slice(5, 7) - 1);
+  if (clinicCal.view === "day") return fmtDay(a);
+  const f = (iso, o) => new Date(iso + "T00:00:00Z").toLocaleDateString("en-GB", { timeZone: "UTC", ...o });
+  return `${f(a, { day: "numeric", month: a.slice(5, 7) === b.slice(5, 7) ? undefined : "short" })} – ${f(b, { day: "numeric", month: "short", year: "numeric" })}`;
+}
+function peopleByDay(rows) {        // iso -> [{ name, kind, AM, PM }] sorted by name
+  const per = new Map();
+  for (const r of rows) {
+    if (!per.has(r.day)) per.set(r.day, new Map());
+    const m = per.get(r.day);
+    if (!m.has(r.user_id)) m.set(r.user_id, { name: r.instructor_name, kind: r.instructor_kind });
+    m.get(r.user_id)[r.session] = r;
+  }
+  const out = new Map();
+  for (const [d, m] of per) out.set(d, [...m.values()].sort((x, y) => x.name.localeCompare(y.name)));
+  return out;
+}
+const sessWord = (h) => !h ? "–" : h.state === "off" ? "Off" : h.state === "limited" ? h.time_note : "In";
 function renderCalendar() {
   const box = $("calendarTab");
   const keepSummary = box.querySelector("#calSummaryText");
   box.replaceChildren();
-  if (clinicCal.y === null) { box.append(el("p", { class: "empty", text: "Loading…" })); return; }
+  if (clinicCal.anchor === null) { box.append(el("p", { class: "empty", text: "Loading…" })); return; }
+  const one = clinicCal.who !== "all";
+  // controls: Day / Week / Month · instructor picker · Internal / External
+  const views = el("div", { class: "seg", role: "group", "aria-label": "Calendar view", id: "calView" },
+    ...[["day", "Day"], ["week", "Week"], ["month", "Month"]].map(([k, t]) => el("button", { type: "button", "aria-pressed": String(clinicCal.view === k),
+      onclick: () => clinicGo(() => { clinicCal.view = k; if (k === "day" && [0, 6].includes(weekdayOf(clinicCal.anchor))) clinicCal.anchor = mondayOf(clinicCal.anchor); }) }, t)));
+  const insts = state.overview.filter((r) => state.instFilter === "all" || (r.instructor_kind || "internal") === state.instFilter)
+    .slice().sort((x, y) => x.resource_name.localeCompare(y.resource_name));
+  const pick = el("select", { id: "calWho", "aria-label": "Which instructor" }, el("option", { value: "all", text: "All instructors" }),
+    ...insts.map((r) => el("option", { value: r.resource_id, text: r.resource_name })));
+  pick.value = insts.some((r) => r.resource_id === clinicCal.who) ? clinicCal.who : "all";
+  if (pick.value === "all" && one) clinicCal.who = "all";
+  pick.addEventListener("change", () => { clinicCal.who = pick.value; clinicCal.summary = null; render(); });
   const seg = el("div", { class: "seg", role: "group", "aria-label": "Show instructors" });
   for (const [k, label] of [["all", "All"], ["internal", "Internal"], ["external", "External"]])
     seg.append(el("button", { type: "button", "aria-pressed": String(state.instFilter === k), onclick: () => { state.instFilter = k; clinicCal.summary = null; render(); } }, label));
-  const rows = clinicCal.rows.filter(calFilter);
-  const per = new Map();      // iso -> Map(user -> { name, AM, PM })
-  for (const r of rows) {
-    if (!per.has(r.day)) per.set(r.day, new Map());
-    const m = per.get(r.day);
-    if (!m.has(r.user_id)) m.set(r.user_id, { name: r.instructor_name });
-    m.get(r.user_id)[r.session] = r;
+  const nav = el("div", { class: "cal-nav" },
+    el("button", { class: "ghost small", type: "button", "aria-label": "Previous", onclick: () => clinicStep(-1) }, "‹"),
+    el("h3", { id: "calTitle", text: clinicTitle() }),
+    el("button", { class: "ghost small", type: "button", "aria-label": "Next", onclick: () => clinicStep(1) }, "›"));
+  const rows = clinicCal.rows.filter(calFilter), per = peopleByDay(rows), now = bkkToday();
+  let body;
+  if (clinicCal.view === "month") {
+    const [a] = clinicRange(), cal = { y: +a.slice(0, 4), m: +a.slice(5, 7) - 1 };
+    body = calGrid(cal, (iso) => {
+      const hol = clinicCal.hol.get(iso), people = per.get(iso) || [];
+      const say = (p) => `${p.name}: morning ${sessWord(p.AM)}, afternoon ${sessWord(p.PM)}`;
+      return el("button", { class: "cal-day wide" + (iso === now ? " today" : "") + (hol ? " holiday" : ""), type: "button", "data-day": iso,
+        title: hol || "", "aria-label": `${fmtDay(iso)}${hol ? " (holiday)" : ""}: ${people.map(say).join("; ") || "no one scheduled"}`,
+        onclick: () => clinicGo(() => { clinicCal.anchor = iso; clinicCal.view = "day"; }) },
+        el("span", { class: "num", text: String(+iso.slice(8, 10)) }),
+        hol ? el("span", { class: "hnote", text: "Holiday" }) : null,
+        ...people.map((p) => el("span", { class: "who-row" }, one ? null : el("span", { class: "who", text: shortName(p.name) }),
+          el("span", { class: "halves" + (one ? "" : " mini") }, ...["AM", "PM"].map((k) => el("span", { class: "half " + (p[k]?.state || "none"), text: halfLabel(p[k]) })))),
+          one && people[0] && (people[0].AM?.state === "limited" || people[0].PM?.state === "limited")
+            ? el("span", { class: "tnote", text: (people[0].AM?.state === "limited" ? people[0].AM : people[0].PM).time_note }) : null));
+    });
+  } else {
+    const [a, b] = clinicRange(), days = [];
+    for (let d = a; d <= b; d = addDays(d, 1)) if (![0, 6].includes(weekdayOf(d))) days.push(d);
+    body = el("div", { class: "day-list", id: "calDays" }, ...days.map((iso) => dayBlock(iso, per.get(iso) || [], clinicCal.view === "week")));
   }
-  const now = bkkToday();
-  const grid = calGrid(clinicCal, (iso) => {
-    const hol = clinicCal.hol.get(iso);
-    const people = [...(per.get(iso) || new Map()).values()].sort((a, b) => a.name.localeCompare(b.name));
-    const say = (p) => `${p.name}: morning ${p.AM ? (p.AM.state === "limited" ? p.AM.time_note : p.AM.state) : "–"}, afternoon ${p.PM ? (p.PM.state === "limited" ? p.PM.time_note : p.PM.state) : "–"}`;
-    return el("button", { class: "cal-day wide" + (iso === now ? " today" : "") + (iso === clinicCal.selected ? " sel" : "") + (hol ? " holiday" : ""), type: "button", "data-day": iso,
-      title: hol || "", "aria-label": `${fmtDay(iso)}${hol ? " (holiday)" : ""}: ${people.map(say).join("; ") || "no one scheduled"}`,
-      onclick: () => { clinicCal.selected = iso; render(); } },
-      el("span", { class: "num", text: String(+iso.slice(8, 10)) }),
-      hol ? el("span", { class: "hnote", text: "Holiday" }) : null,
-      ...people.map((p) => el("span", { class: "who-row" }, el("span", { class: "who", text: shortName(p.name) }),
-        el("span", { class: "halves mini" }, ...["AM", "PM"].map((k) => el("span", { class: "half " + (p[k]?.state || "none"), text: halfLabel(p[k]) }))))));
-  });
-  box.append(el("div", { class: "card" }, el("h2", { text: "Clinic calendar" }), seg,
-    monthNav(clinicCal, () => { clinicCal.selected = null; render(); loadClinicCalendar(true).then(render).catch((e) => banner(friendly(e), "error")); }),
-    calLegend(), grid, el("p", { class: "hint", text: "Each name: left box = morning, right box = afternoon. ✓ in clinic · ½ part of the session · ✗ off. Tap a date for full names and times." })));
-  if (clinicCal.selected && clinicCal.selected.slice(0, 7) === isoOf(clinicCal.y, clinicCal.m, 1).slice(0, 7)) box.append(dayDetail(clinicCal.selected, rows));
+  box.append(el("div", { class: "card" }, el("h2", { text: "Clinic calendar" }), views, pick, one ? null : seg, nav,
+    calLegend(), body,
+    el("p", { class: "hint", text: clinicCal.view === "month"
+      ? (one ? "Left box = morning, right box = afternoon. Tap a date for details." : "Each name: left box = morning, right box = afternoon. Tap a date to see that day.")
+      : "✓ in clinic · ½ part of the session (times shown) · ✗ off." })));
   if (isAdmin()) box.append(summaryCard(keepSummary), importCard(), holidaysCard());
 }
-function dayDetail(iso, rows) {
-  const card = el("div", { class: "card", id: "calDay" }, el("h2", { text: fmtDay(iso) }),
-    clinicCal.hol.get(iso) ? el("p", { class: "holiday-line", text: "Holiday: " + clinicCal.hol.get(iso) }) : null);
-  for (const [code, word] of [["AM", "Morning"], ["PM", "Afternoon"]]) {
-    const rs = rows.filter((r) => r.day === iso && r.session === code)
-      .sort((a, b) => (a.state === "off") - (b.state === "off") || a.instructor_name.localeCompare(b.instructor_name));
-    card.append(el("div", { class: "section-title", text: word }));
-    card.append(rs.length ? el("ul", { class: "list compact" }, ...rs.map((r) => el("li", { class: "item cal-person " + r.state },
-      el("span", { class: "mark", text: r.state === "off" ? "✗" : r.state === "limited" ? "½" : "✓" }),
-      el("div", { class: "main" }, el("div", { class: "name" }, r.instructor_name, r.instructor_kind === "external" ? el("span", { class: "badge", text: "external" }) : null),
-        el("div", { class: "meta", text: r.state === "off" ? "Off" : r.state === "limited" ? `Only ${r.time_note}` : "In clinic" })))))
-      : el("p", { class: "empty", text: "No one scheduled." }));
-  }
-  return card;
+function dayBlock(iso, people, tappable) {
+  const hol = clinicCal.hol.get(iso);
+  const pill = (h, word) => el("span", { class: "pill half " + (h?.state || "none") }, `${word} ${h ? halfLabel(h) : "–"}`);
+  return el("div", { class: "day-block" + (iso === bkkToday() ? " today" : "") + (hol ? " holiday" : ""), "data-day": iso },
+    el("div", { class: "day-head" }, tappable
+      ? el("button", { class: "linkish", type: "button", onclick: () => clinicGo(() => { clinicCal.anchor = iso; clinicCal.view = "day"; }) }, fmtDay(iso))
+      : el("b", { text: fmtDay(iso) }), hol ? el("span", { class: "holiday-line", text: " · Holiday: " + hol }) : null,
+      hol && isAdmin() && !tappable ? el("button", { class: "ghost small", type: "button", id: "calRemoveHoliday", disabled: state.busy, onclick: async () => {
+        if (!(await askConfirm(`Remove the holiday on ${fmtDay(iso)} (${hol})? Usual clinic days will show again.`))) return;
+        act(async () => { await rpc("admin_remove_holiday", { p_day: iso }); holState.list = null; await loadClinicCalendar(true); }, "Holiday removed.");
+      } }, "Remove holiday") : null),
+    people.length ? el("ul", { class: "inst-lines" }, ...people.map((p) => {
+      const lim = p.AM?.state === "limited" ? p.AM : p.PM?.state === "limited" ? p.PM : null;
+      return el("li", { class: "inst-line" },
+        el("span", { class: "iname" }, p.name, p.kind === "external" ? el("span", { class: "badge", text: "ext" }) : null),
+        el("span", { class: "pills" }, pill(p.AM, "AM"), pill(p.PM, "PM")),
+        lim ? el("span", { class: "tnote", text: "only " + lim.time_note }) : null);
+    })) : el("p", { class: "empty small", text: hol ? "No clinic." : "No one scheduled." }));
 }
 // "Dr Bee: ✓ 2/12, 4/12 (until 10:00) ✗ 11/12" for this month (from today) and next month
 function buildSummary(rows, fromIso, toIso, hol = new Map()) {
@@ -1061,13 +1122,56 @@ function usualFromSchedule(rows) {        // weekly schedule rows -> (day) => Se
     return new Set(rows.filter((r) => r.weekday === dow && (!r.weeks || r.weeks.includes(wk))).map((r) => r.session_code));
   };
 }
-const importState = { text: "", preview: null };
+const importState = { text: "", preview: null, table: new Map() };   // table: user_id -> { mark: "✓" | "✗", dates }
+function mergePersons(list) {
+  const by = new Map();
+  for (const P of list) {
+    const Q = by.get(P.user);
+    if (!Q) { by.set(P.user, P); continue; }
+    Q.exact = Q.exact || P.exact;
+    for (const m of P.months) Q.months.add(m);
+    for (const [d, D] of P.days) Q.days.set(d, D);
+  }
+  return [...by.values()];
+}
 function importCard() {
-  const ta = el("textarea", { id: "calImportText", rows: "5", placeholder: "Dr Bee: ✗ 14/12, 15/12 AM\nDr Cat: ✓ 3/12, 10/12 until 10:00, 17/12\nDr Dee: ✗ 21/12-25/12" });
-  ta.value = importState.text;
-  ta.addEventListener("input", () => { importState.text = ta.value; importState.preview = null; $("calImportPreview")?.replaceChildren(); $("calImportApply")?.classList.add("hidden"); });
+  const card = el("div", { class: "card", id: "calImport" }, el("h2", { text: "Update instructors' days" }));
+  if (!state.people.length) {
+    card.append(el("p", { class: "empty", text: "Loading instructors…" }));
+    loadPeople().then(render).catch((e) => banner(friendly(e), "error"));
+    return card;
+  }
+  const inst = state.people.filter((p) => p.role === "instructor" && p.active)
+    .sort((x, y) => ((x.instructor_kind || "internal") === "external") - ((y.instructor_kind || "internal") === "external") || x.display_name.localeCompare(y.display_name));
   const prev = el("div", { id: "calImportPreview" });
-  const apply = el("button", { class: "primary hidden", type: "button", id: "calImportApply", disabled: state.busy, onclick: () => {
+  const apply = el("button", { class: "primary hidden", type: "button", id: "calImportApply", disabled: state.busy });
+  const stale = () => { importState.preview = null; prev.replaceChildren(); apply.classList.add("hidden"); };
+  // three columns: instructor · ✓ / ✗ · dates
+  const tbl = el("table", { class: "import-table", id: "calImportTable" },
+    el("thead", {}, el("tr", {}, el("th", { text: "Instructor" }), el("th", { text: "✓ / ✗" }), el("th", { text: "Dates (day/month)" }))));
+  const tb = el("tbody");
+  let lastKind = null;
+  for (const u of inst) {
+    const kind = u.instructor_kind || "internal";
+    if (kind !== lastKind) { tb.append(el("tr", { class: "group" }, el("td", { colspan: "3", text: kind === "external" ? "External" : "Internal" }))); lastKind = kind; }
+    const st = importState.table.get(u.user_id) || { mark: "✗", dates: "" };
+    const mark = el("select", { "aria-label": `${u.display_name}: coming or not`, "data-uid": u.user_id, class: "imp-mark" },
+      el("option", { value: "✗", text: "✗ off" }), el("option", { value: "✓", text: "✓ in" }));
+    mark.value = st.mark;
+    const dates = el("input", { type: "text", "aria-label": `${u.display_name}: dates`, "data-uid": u.user_id, class: "imp-dates", maxlength: "300",
+      placeholder: "12/12, 14/12 AM", autocomplete: "off" });
+    dates.value = st.dates;
+    const save = () => { importState.table.set(u.user_id, { mark: mark.value, dates: dates.value }); stale(); };
+    mark.addEventListener("change", save); dates.addEventListener("input", save);
+    tb.append(el("tr", {}, el("td", { class: "imp-name", text: u.display_name }), el("td", {}, mark), el("td", {}, dates)));
+  }
+  tbl.append(tb);
+  // pasting a whole message still works (e.g. copied from LINE)
+  const ta = el("textarea", { id: "calImportText", rows: "4", placeholder: "Dr Bee: ✗ 14/12, 15/12 AM\nDr Cat: ✓ 3/12, 10/12 until 10:00, 17/12" });
+  ta.value = importState.text;
+  ta.addEventListener("input", () => { importState.text = ta.value; stale(); });
+  const paste = el("details", { class: "range-add", open: importState.text ? true : null }, el("summary", { text: "Or paste a message" }), ta);
+  apply.onclick = () => {
     const ch = importState.preview?.changes || [];
     if (!ch.length) return;
     act(async () => {
@@ -1077,26 +1181,33 @@ function importCard() {
         if (c.off) await rpc("add_day_off", { p_user_id: c.user, p_from: c.day, p_to: c.day, p_session: c.off, p_note: null });
         if (c.extra) await rpc("add_clinic_day", { p_user_id: c.user, p_day: c.day, p_session: c.extra });
       }
-      importState.text = ""; importState.preview = null; clinicCal.summary = null;
+      importState.text = ""; importState.preview = null; importState.table = new Map(); clinicCal.summary = null;
       await loadClinicCalendar(true);
     }, `Calendar updated: ${ch.length} change${ch.length === 1 ? "" : "s"}.`);
-  } }, "Apply");
+  };
   const show = () => {
     const pv = importState.preview;
     if (!pv) return;
     prev.replaceChildren(
       pv.changes.length ? el("ul", { class: "list compact" }, ...pv.changes.map((c) => el("li", { class: "item" },
         el("div", { class: "main" }, el("div", { class: "name", text: `${c.name} · ${fmtDay(c.day)}` }), el("div", { class: "meta", text: c.label })))))
-        : el("p", { class: "empty", text: "No dates found." }),
+        : el("p", { class: "empty", text: "No changes." }),
       ...pv.problems.map((t) => el("p", { class: "warn", text: t })));
     apply.textContent = `Apply ${pv.changes.length} change${pv.changes.length === 1 ? "" : "s"}`;
     apply.classList.toggle("hidden", !pv.changes.length);
   };
   const check = el("button", { class: "ghost", type: "button", id: "calImportCheck", onclick: async () => {
     try {
-      if (!state.people.length) await loadPeople();
-      const inst = state.people.filter((p) => p.role === "instructor" && p.active), today = bkkToday();
-      const { persons, problems } = parseCalendarText(ta.value, inst, today);
+      const today = bkkToday(), found = [], problems = [];
+      for (const u of inst) {                                   // table rows: matched by account, not by name
+        const st = importState.table.get(u.user_id);
+        if (!st || !st.dates.trim()) continue;
+        const r = parseCalendarText(`${u.display_name}: ${st.mark} ${st.dates}`, [u], today);
+        found.push(...r.persons); problems.push(...r.problems);
+      }
+      const r = parseCalendarText(ta.value, inst, today);
+      found.push(...r.persons); problems.push(...r.problems);
+      const persons = mergePersons(found);
       const usual = new Map(), rows = new Map();
       await Promise.all(persons.map(async (P) => {
         const [sch, offs] = await Promise.all([rpc("admin_get_schedule", { p_user_id: P.user }), rpc("list_days_off", { p_user_id: P.user })]);
@@ -1105,16 +1216,17 @@ function importCard() {
       }));
       const hol = await loadHolidays(today, isoOf(+today.slice(0, 4), +today.slice(5, 7) + 13, 0));
       const changes = planCalendarChanges(persons, (u, d) => (hol.has(d) ? new Set() : usual.get(u)(d)),
-        (u, d) => rows.get(u).some((r) => d >= r.day_from && d <= r.day_to), today);
+        (u, d) => rows.get(u).some((x) => d >= x.day_from && d <= x.day_to), today);
       importState.preview = { changes, problems }; show();
     } catch (e) { banner(friendly(e), "error"); }
   } }, "Check");
   show();
-  return el("div", { class: "card", id: "calImport" }, el("h2", { text: "Update from a message" }),
-    el("p", { class: "hint", text: "One line per instructor, dates as day/month. “Name: ✓ dates” = comes only on those dates that month (all other days off, extra days added). " +
-      "“Name: ✗ dates” = off on those dates, the rest of the month as usual. Add AM / PM for half a day, 15/12-18/12 for a range, " +
-      "“until 10:00”, “from 13:00” or “9:00-11:00” for part of a day. Check shows the changes before anything is saved." }),
-    ta, el("div", { class: "row end" }, check, apply), prev);
+  card.append(
+    el("p", { class: "hint", text: "Fill in only the instructors whose days change. ✓ in = comes only on those dates that month (other usual days become off; extra days are added). " +
+      "✗ off = off on those dates, the rest of the month as usual. Dates: 12/12, 14/12 AM, 15/12-18/12, 16/12 until 10:00, 17/12 from 13:00, 18/12 9:00-11:00. " +
+      "Check shows every change before anything is saved." }),
+    tbl, paste, el("div", { class: "row end" }, check, apply), prev);
+  return card;
 }
 // ---------- holidays (admins) ----------
 const holState = { list: null, status: null };
