@@ -280,7 +280,8 @@ function render() {
     el("button", { class: "status-chip " + (myRes.on_duty ? "active" : "inactive"), type: "button", id: "myStatusBtn", disabled: state.busy,
       onclick: () => setStatus(myRes, true) },
       el("span", { class: "dot" }), statusText(myRes),
-      el("span", { class: "chev", text: "Change today ›" })));
+      el("span", { class: "chev", text: "Change today ›" })),
+    el("button", { class: "cal-chip", type: "button", id: "myCalBtn", onclick: openMyCalendar }, "📅 My calendar"));
   const roleLabel = ({ resident: "Resident", instructor: p.instructor_kind === "external" ? "External instructor" : "Instructor",
     admin: "Admin", technician: "Technician" }[p.role] || p.role) + (p.is_admin && p.role !== "admin" ? " · Admin" : "");
   $("sessionLine").textContent = `${roleLabel} · ` + (state.session
@@ -676,6 +677,11 @@ async function openSettings() {
   try { state.schedule = state.profile.role === "instructor" ? ((await rpc("get_my_schedule")) || []) : []; render(); }
   catch (e) { banner(friendly(e), "error"); }
 }
+async function openMyCalendar() {
+  await openSettings();
+  const t = $("setDaysOff");
+  if (t) t.scrollIntoView({ block: "start", behavior: "smooth" });
+}
 let settingsCard = null;   // built once per visit so a background refresh never wipes unsaved choices
 function summaryFields(prefix, { email, freq, scope, admin }) {
   const e = el("input", { type: "text", inputmode: "email", autocapitalize: "off", id: `${prefix}Email`, maxlength: "254", autocomplete: "email", placeholder: "name@example.com" }); e.value = email || "";
@@ -931,14 +937,19 @@ function peopleByDay(rows) {        // iso -> [{ name, kind, AM, PM }] sorted by
 const sessWord = (h) => !h ? "–" : h.state === "off" ? "Off" : h.state === "limited" ? h.time_note : "In";
 function renderCalendar() {
   const box = $("calendarTab");
+  // don't rebuild under someone who is typing in an admin form (background refresh)
+  const ae = document.activeElement;
+  if (ae && box.contains(ae) && ["INPUT", "SELECT", "TEXTAREA"].includes(ae.tagName) && ae.id !== "calWho") return;
   const keepSummary = box.querySelector("#calSummaryText");
   box.replaceChildren();
   if (clinicCal.anchor === null) { box.append(el("p", { class: "empty", text: "Loading…" })); return; }
   const one = clinicCal.who !== "all";
   // controls: Day / Week / Month · instructor picker · Internal / External
-  const views = el("div", { class: "seg", role: "group", "aria-label": "Calendar view", id: "calView" },
-    ...[["day", "Day"], ["week", "Week"], ["2week", "2 wks"], ["month", "Month"], ["2month", "2 mo"]].map(([k, t]) => el("button", { "data-view": k, type: "button", "aria-pressed": String(clinicCal.view === k),
-      onclick: () => clinicGo(() => { clinicCal.view = k; if (k === "day" && [0, 6].includes(weekdayOf(clinicCal.anchor))) clinicCal.anchor = mondayOf(clinicCal.anchor); }) }, t)));
+  const viewBtn = ([k, t]) => el("button", { "data-view": k, type: "button", "aria-pressed": String(clinicCal.view === k),
+      onclick: () => clinicGo(() => { clinicCal.view = k; if (k === "day" && [0, 6].includes(weekdayOf(clinicCal.anchor))) clinicCal.anchor = mondayOf(clinicCal.anchor); }) }, t);
+  const views = el("div", { id: "calView", class: "view-rows" },
+    el("div", { class: "seg", role: "group", "aria-label": "Calendar view" }, ...[["day", "Day"], ["week", "Week"], ["month", "Month"]].map(viewBtn)),
+    el("div", { class: "seg two", role: "group", "aria-label": "Longer views" }, ...[["2week", "2 weeks"], ["2month", "2 months"]].map(viewBtn)));
   const insts = state.overview.filter((r) => state.instFilter === "all" || (r.instructor_kind || "internal") === state.instFilter)
     .slice().sort((x, y) => x.resource_name.localeCompare(y.resource_name));
   const pick = el("select", { id: "calWho", "aria-label": "Which instructor" }, el("option", { value: "all", text: "All instructors" }),
@@ -992,7 +1003,11 @@ function renderCalendar() {
     el("p", { class: "hint", text: clinicCal.view === "month" || clinicCal.view === "2month"
       ? (one ? "Left box = morning, right box = afternoon. Tap a date for details." : "Only instructors who are in are listed. Each name: left box = morning, right box = afternoon. Tap a date to see that day.")
       : one ? "✓ in clinic · ½ part of the session (times shown) · ✗ off." : "Only instructors who are in are listed. ✓ in clinic · ½ part of the session (times shown)." })));
-  if (isAdmin()) box.append(summaryCard(keepSummary), eventsCard(), importCard(), holidaysCard());
+  if (isAdmin()) box.append(el("div", { class: "admin-tools" }, el("div", { class: "section-title", text: "Admin tools" }),
+    adminFold("summary", "Summary message", "Copy or send this and next month in LINE", () => summaryCard(keepSummary)),
+    adminFold("events", "Conferences & events", "Who is away for a conference or meeting", eventsCard),
+    adminFold("import", "Update instructors' days", "Change many days at once, or paste a message", importCard),
+    adminFold("holidays", "Holidays", "Thai public holidays are added automatically", holidaysCard)));
 }
 const canEditDay = (uid) => isAdmin() || (state.profile.role === "instructor" && uid === state.profile.user_id);
 async function editPersonDay(p, iso) {
@@ -1000,6 +1015,19 @@ async function editPersonDay(p, iso) {
   if (!v) return;
   act(async () => { await applyDayChoice(p.user, iso, v); await loadClinicCalendar(true); },
     v.mode === "schedule" ? `${p.name}, ${fmtDay(iso)}: back to the usual schedule.` : `${p.name}, ${fmtDay(iso)} saved.`);
+}
+// admin tools fold away so the calendar stays on top; open / closed is remembered while the app is open
+const adminOpen = new Set();
+function adminFold(key, title, hint, build) {
+  const open = adminOpen.has(key) || (key === "events" && evState.editing);
+  const d = el("details", { class: "fold", id: `fold-${key}`, open: open ? true : null },
+    el("summary", {}, el("span", { class: "fold-title", text: title }), el("span", { class: "fold-hint", text: hint })));
+  if (open) d.append(build());
+  d.addEventListener("toggle", () => {
+    if (d.open && !adminOpen.has(key)) { adminOpen.add(key); d.append(build()); }
+    else if (!d.open) { adminOpen.delete(key); while (d.children.length > 1) d.lastChild.remove(); }
+  });
+  return d;
 }
 function dayBlock(iso, people, tappable, events = []) {
   const hol = clinicCal.hol.get(iso);
@@ -1441,8 +1469,9 @@ function renderSettings() {
       settingsCard = null; applyTabs();
     }, "Settings saved.");
   });
-  settingsCard = el("div", { class: "card" }, el("h2", { text: "Settings" }), form,
-    state.profile.role === "instructor" ? daysOffSection(null, "set") : null);
+  settingsCard = el("div", { class: "settings-wrap" },
+    state.profile.role === "instructor" ? el("div", { class: "card", id: "myCalCard" }, el("h2", { text: "My calendar" }), daysOffSection(null, "set")) : null,
+    el("div", { class: "card" }, el("h2", { text: "Settings" }), form));
   box.append(settingsCard);
 }
 function describeChange(c) {

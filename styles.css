@@ -236,7 +236,8 @@ details.range-add { margin-top: 10px; } details.range-add summary { cursor: poin
 .import-table .imp-name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .import-table select, .import-table input { padding: 10px 8px; font-size: 14px; border-radius: 12px; }
 .import-table tr.group td { font-size: 12px; font-weight: 600; color: var(--slate); padding-top: 6px; }
-#calView button { padding: 8px 4px; font-size: 14px; }
+.view-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
+.view-rows .seg { margin: 0; }
 .months { display: flex; flex-direction: column; gap: 10px; }
 .enote { font-size: 10px; line-height: 12px; color: #6b4fbb; background: #efeafc; border-radius: 4px; padding: 0 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .event-line { font-size: 13px; color: #4b3a8f; background: #f3effd; border-radius: 10px; padding: 6px 8px; margin: 0 0 6px; }
@@ -244,3 +245,17 @@ details.range-add { margin-top: 10px; } details.range-add summary { cursor: poin
 .ev-picks .choice { font-size: 14px; }
 .name-edit { font-weight: 400; font-size: 15px; text-decoration: none; border-bottom: 1px dashed var(--muted); }
 .danger-zone { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; }
+.cal-chip { padding: 8px 12px; border-radius: 999px; border: 1px solid var(--line); background: #fff; font-size: 14px; color: var(--ink); }
+.my-status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.settings-wrap { display: flex; flex-direction: column; gap: 12px; }
+.admin-tools { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+details.fold { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 0; }
+details.fold > summary { list-style: none; cursor: pointer; padding: 14px 16px; display: flex; flex-direction: column; gap: 2px; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary::after { content: "›"; position: absolute; right: 22px; font-size: 22px; color: var(--muted); transition: transform .15s; }
+details.fold { position: relative; }
+details.fold[open] > summary::after { transform: rotate(90deg); }
+.fold-title { font-weight: 700; font-size: 16px; }
+.fold-hint { font-size: 13px; color: var(--muted); }
+details.fold > .card { margin: 0; border: 0; box-shadow: none; }
+details.fold > .card > h2:first-child { display: none; }
