@@ -27,6 +27,7 @@ const MESSAGES = {
   invalid_summary_scope: "Choose what the summary should include.",
   invalid_status: "Choose a status.",
   invalid_status_time: "Choose a time later than now.",
+  no_session_left_today: "There are no more clinic sessions today.",
   invalid_instructor_kind: "Choose Internal or External.",
   instructor_queue_not_empty: "Your queue still has people in it. Finish or wait for it to empty first.",
   leave_queues_first: "Leave the instructor queues you are waiting in first.",
@@ -271,8 +272,8 @@ function render() {
   if (myRes) $("myStatusLine").replaceChildren(
     el("button", { class: "status-chip " + (myRes.on_duty ? "active" : "inactive"), type: "button", id: "myStatusBtn", disabled: state.busy,
       onclick: () => setStatus(myRes, true) },
-      el("span", { class: "dot" }), (myRes.on_duty ? "Active" : "Inactive") + (myRes.status_note ? ` · ${myRes.status_note}` : ""),
-      el("span", { class: "chev", text: "Change ›" })));
+      el("span", { class: "dot" }), statusText(myRes),
+      el("span", { class: "chev", text: "Change today ›" })));
   const roleLabel = ({ resident: "Resident", instructor: p.instructor_kind === "external" ? "External instructor" : "Instructor",
     admin: "Admin", technician: "Technician" }[p.role] || p.role) + (p.is_admin && p.role !== "admin" ? " · Admin" : "");
   $("sessionLine").textContent = `${roleLabel} · ` + (state.session
@@ -355,10 +356,13 @@ function statusBadge(r) {
   const note = r.status_note && r.status_note !== "scheduled" ? ` · ${r.status_note}` : (r.status_note === "scheduled" ? " · scheduled" : "");
   return el("span", { class: "badge " + (r.on_duty ? "active" : "inactive"), text: (r.on_duty ? "Active" : "Inactive") + note });
 }
-function askStatus(name) {
+const overridden = (r) => !!r.status_note && r.status_note !== "scheduled";   // today's add-on is set
+const statusText = (r) => (r.on_duty ? "Active" : "Inactive") + (overridden(r) ? ` · ${r.status_note}` : " · by schedule");
+function askStatus(name, hasOverride = false) {
   return new Promise((resolve) => {
     const d = $("statusDialog"), t = $("statusTime"), u = $("statusUntilTime");
-    $("statusTitle").textContent = `Status today: ${name}`;
+    $("statusTitle").textContent = `Change today only: ${name}`;
+    $("statusReset").classList.toggle("hidden", !hasOverride);
     for (const sel of [t, u]) if (!sel.options.length) for (let h = 7; h <= 18; h++) for (const m of [0, 15, 30, 45]) {
       const v = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`; sel.append(el("option", { value: v, text: v })); }
     t.value = "10:00"; u.value = "12:00"; $("statusActive").checked = true;
@@ -370,6 +374,7 @@ function askStatus(name) {
     };
     for (const r of d.querySelectorAll("input[name=statusMode]")) r.onchange = sync; sync();
     d.onclose = () => {
+      if (d.returnValue === "schedule") return resolve({ mode: "schedule", time: null, until: null });
       if (d.returnValue !== "ok") return resolve(null);
       const mode = d.querySelector("input[name=statusMode]:checked").value;
       if (mode === "between" && u.value <= t.value) { banner("The end time must be after the start time.", "error"); return resolve(null); }
@@ -379,7 +384,7 @@ function askStatus(name) {
   });
 }
 async function setStatus(r, isOwner) {
-  const v = await askStatus(r.resource_name);
+  const v = await askStatus(r.resource_name, overridden(r));
   if (!v) return;
   act(async () => {
     await rpc("set_instructor_status", { p_resource_id: isOwner ? null : r.resource_id, p_mode: v.mode, p_time: v.time, p_until: v.until });
